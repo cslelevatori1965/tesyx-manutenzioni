@@ -4,12 +4,25 @@ from datetime import datetime, date
 from supabase import create_client
 
 st.set_page_config(page_title="TESYX Manutenzioni", page_icon="🛠️", layout="wide")
+st.markdown("""
+<style>
+@media (max-width: 700px) {
+  .block-container {padding-top: 1rem; padding-left: .65rem; padding-right: .65rem;}
+  div[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.25); padding: .45rem; border-radius: .65rem;}
+  .stButton > button {min-height: 3rem; font-weight: 700;}
+}
+</style>
+""", unsafe_allow_html=True)
 MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile',4),('mag','Maggio',5),('giu','Giugno',6),('lug','Luglio',7),('ago','Agosto',8),('sett','Settembre',9),('ott','Ottobre',10),('nov','Novembre',11),('dic','Dicembre',12)]
 XLS='impianti.xlsx'
 
 @st.cache_resource
 def db():
-    return create_client(st.secrets['SUPABASE_URL'], st.secrets['SUPABASE_SERVICE_KEY'])
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        raise RuntimeError("Mancano SUPABASE_URL o SUPABASE_KEY nei Secrets di Streamlit.")
+    return create_client(url, key)
 
 @st.cache_data
 def source():
@@ -98,7 +111,7 @@ except Exception as e:
     st.error('Impossibile inizializzare il database. Controlla i Secrets di Streamlit.'); st.exception(e); st.stop()
 
 st.title('🛠️ TESYX · Gestione Manutenzioni')
-area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'])
+area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 ensure_jobs(year); p=dataset(year); now=datetime.now()
 if p.empty: st.warning('Nessuna manutenzione disponibile.'); st.stop()
@@ -127,7 +140,9 @@ if area=='📊 Amministratore':
     if overdue.empty: st.success('Nessuna manutenzione arretrata.')
     else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
 else:
-    techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist()); tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=(techs.index('Cristian') if 'Cristian' in techs else 0))
+    techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
+cristian_idx = next((i for i,x in enumerate(techs) if 'cristian' in str(x).lower()), 0)
+tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
     if tech!='TUTTI': f=f[f.assegnato==tech]
@@ -135,7 +150,9 @@ else:
     if mese!='TUTTI': f=f[f.mese_nome==mese]
     c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
     if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
-    st.subheader('Manutenzioni'); q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
+    st.subheader('Manutenzioni')
+st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono registrate.')
+q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
     if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
     if 'selected_job' in st.session_state:
         rr=p[p.id_x==st.session_state.selected_job]
@@ -146,7 +163,7 @@ else:
                 cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
                 sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
                 b1,b2=st.columns([3,1])
-                if b1.button('CONFERMA E CHIUDI MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
+                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
@@ -156,9 +173,9 @@ else:
             with st.container(border=True):
                 a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
                 if r.stato_ui!='ESEGUITA':
-                    if c.button('APRI MANUTENZIONE',key='do_'+str(r.id_x),use_container_width=True,type='primary'): st.session_state.selected_job=int(r.id_x); st.rerun()
+                    if c.button('REGISTRA MANUTENZIONE',key='do_'+str(r.id_x),use_container_width=True,type='primary'): st.session_state.selected_job=int(r.id_x); st.rerun()
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                     if bool(r.semestrale): c.caption('☑ Semestrale')
 
-st.caption('Versione ONLINE TEST · Dati condivisi su Supabase.')
+st.caption('Versione CRISTIAN TEST · Dati condivisi online su Supabase · Area Amministratore disponibile dal menu laterale.')

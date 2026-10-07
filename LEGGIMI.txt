@@ -1,0 +1,25 @@
+TESYX MANUTENZIONI - CRISTIAN TEST
+
+Questa versione usa Supabase come archivio condiviso online.
+
+FILE DA METTERE NEL REPOSITORY GITHUB:
+- app.py
+- requirements.txt
+- impianti.xlsx (se presente)
+
+SECRETS STREAMLIT:
+SUPABASE_URL = "il tuo Project URL Supabase"
+SUPABASE_KEY = "la tua secret key Supabase"
+
+IMPORTANTE:
+Non inserire mai la secret key dentro app.py o GitHub.
+
+MODIFICHE DELLA VERSIONE:
+- interfaccia più leggibile da smartphone
+- Cristian preselezionato nel filtro tecnico
+- REGISTRA MANUTENZIONE al posto di APRI MANUTENZIONE
+- tecnico esecutore indipendente dal tecnico assegnatario
+- spunta Semestrale
+- scaduti evidenziati in rosso
+- dashboard Amministratore mantenuta
+- accetta SUPABASE_KEY e, per compatibilità, SUPABASE_SERVICE_KEY
