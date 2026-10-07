@@ -119,7 +119,7 @@ if p.empty: st.warning('Nessuna manutenzione disponibile.'); st.stop()
 if area=='📊 Amministratore':
     admin_password = st.text_input('🔐 Password Amministratore', type='password')
 
-    if admin_password != st.secrets['ADMIN_PASSWORD']:
+    if admin_password.strip() != str(st.secrets['tesyx2026!']).strip():
         if admin_password:
             st.error('Password non corretta.')
         st.stop()
