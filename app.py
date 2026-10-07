@@ -148,9 +148,9 @@ if area=='📊 Amministratore':
     if overdue.empty: st.success('Nessuna manutenzione arretrata.')
     else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
 else:
-    techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
-cristian_idx = next((i for i,x in enumerate(techs) if 'cristian' in str(x).lower()), 0)
-tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
+techs = ['TUTTI'] + sorted(p['assegnato'].dropna().astype(str).unique().tolist())
+cristian_idx = next((i for i, x in enumerate(techs) if 'cristian' in x.lower()), 0)
+tech = st.sidebar.selectbox('Tecnico assegnatario', techs, index=cristian_idx)
 stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
 f=p.copy()
 if tech!='TUTTI': f=f[f.assegnato==tech]
