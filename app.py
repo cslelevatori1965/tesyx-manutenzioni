@@ -148,42 +148,42 @@ if area=='📊 Amministratore':
     if overdue.empty: st.success('Nessuna manutenzione arretrata.')
     else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
 else:
-techs = ['TUTTI'] + sorted(p['assegnato'].dropna().astype(str).unique().tolist())
-cristian_idx = next((i for i, x in enumerate(techs) if 'cristian' in x.lower()), 0)
-tech = st.sidebar.selectbox('Tecnico assegnatario', techs, index=cristian_idx)
-stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
-f=p.copy()
-if tech!='TUTTI': f=f[f.assegnato==tech]
-if stato!='TUTTI': f=f[f.stato_ui==stato]
-if mese!='TUTTI': f=f[f.mese_nome==mese]
-c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
-if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
-st.subheader('Manutenzioni')
-st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono registrate.')
-q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
-if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
-if 'selected_job' in st.session_state:
-        rr=p[p['id']==st.session_state.selected_job]
-        if not rr.empty:
-            r=rr.iloc[0]
-            with st.container(border=True):
-                st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
-                cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
-                sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
-                b1,b2=st.columns([3,1])
-                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
-                if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
-if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
-else:
-        order={'SCADUTA':0,'DA FARE':1,'ESEGUITA':2}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
-        page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
-        for _,r in f.iloc[start:start+page_size].iterrows():
-            with st.container(border=True):
-                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
-                if r.stato_ui!='ESEGUITA':
-                    if c.button('REGISTRA MANUTENZIONE', key='do_'+str(r['id']), use_container_width=True, type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
-                else:
-                    c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
-                    if bool(r.semestrale): c.caption('☑ Semestrale')
+    techs = ['TUTTI'] + sorted(p['assegnato'].dropna().astype(str).unique().tolist())
+    cristian_idx = next((i for i, x in enumerate(techs) if 'cristian' in x.lower()), 0)
+    tech = st.sidebar.selectbox('Tecnico assegnatario', techs, index=cristian_idx)
+    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
+    f=p.copy()
+  if tech!='TUTTI': f=f[f.assegnato==tech]
+  if stato!='TUTTI': f=f[f.stato_ui==stato]
+  if mese!='TUTTI': f=f[f.mese_nome==mese]
+  c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
+  if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
+  st.subheader('Manutenzioni')
+  st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono registrate.')
+  q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
+  if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
+  if 'selected_job' in st.session_state:
+          rr=p[p['id']==st.session_state.selected_job]
+          if not rr.empty:
+              r=rr.iloc[0]
+              with st.container(border=True):
+                  st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
+                  cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
+                  sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
+                  b1,b2=st.columns([3,1])
+                  if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
+                  if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
+  if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
+  else:
+          order={'SCADUTA':0,'DA FARE':1,'ESEGUITA':2}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
+          page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
+          for _,r in f.iloc[start:start+page_size].iterrows():
+              with st.container(border=True):
+                  a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
+                  if r.stato_ui!='ESEGUITA':
+                      if c.button('REGISTRA MANUTENZIONE', key='do_'+str(r['id']), use_container_width=True, type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
+                  else:
+                      c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
+                      if bool(r.semestrale): c.caption('☑ Semestrale')
 
 st.caption('Versione CRISTIAN TEST · Dati condivisi online su Supabase · Area Amministratore disponibile dal menu laterale.')
