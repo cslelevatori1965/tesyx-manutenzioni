@@ -1,4 +1,4 @@
-import streamlit as st
+ffimport streamlit as st
 import pandas as pd
 from datetime import datetime, date
 from supabase import create_client
@@ -117,7 +117,15 @@ ensure_jobs(year); p=dataset(year); now=datetime.now()
 if p.empty: st.warning('Nessuna manutenzione disponibile.'); st.stop()
 
 if area=='📊 Amministratore':
+    admin_password = st.text_input('🔐 Password Amministratore', type='password')
+
+    if admin_password != st.secrets['ADMIN_PASSWORD']:
+        if admin_password:
+            st.error('Password non corretta.')
+        st.stop()
+
     st.subheader('📊 Dashboard Amministratore')
+    
     month_num=st.selectbox('Periodo',range(1,13),index=now.month-1,format_func=lambda x:MESI[x-1][1])
     pm=p[p.mese_competenza==month_num].copy(); overdue=p[(p.stato_ui=='SCADUTA') & (p.mese_competenza<month_num if year==now.year else True)]
     total=len(pm); done=(pm.stato_ui=='ESEGUITA').sum(); todo=(pm.stato_ui=='DA FARE').sum(); sem=int(pm.semestrale.fillna(False).astype(bool).sum())
