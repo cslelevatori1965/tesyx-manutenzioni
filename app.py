@@ -173,7 +173,7 @@ else:
             with st.container(border=True):
                 a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
                 if r.stato_ui!='ESEGUITA':
-                    if c.button('REGISTRA MANUTENZIONE',key='do_'+str(r.id_x),use_container_width=True,type='primary'): st.session_state.selected_job=int(r.id_x); st.rerun()
+                    if c.button('REGISTRA MANUTENZIONE', key='do_'+str(r['id']), use_container_width=True, type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                     if bool(r.semestrale): c.caption('☑ Semestrale')
