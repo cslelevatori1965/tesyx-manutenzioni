@@ -155,7 +155,7 @@ st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono
 q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
 if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
 if 'selected_job' in st.session_state:
-        rr=p[p.id_x==st.session_state.selected_job]
+        rr=p[p['id']==st.session_state.selected_job]
         if not rr.empty:
             r=rr.iloc[0]
             with st.container(border=True):
