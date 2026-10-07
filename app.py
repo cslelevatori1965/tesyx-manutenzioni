@@ -143,14 +143,14 @@ else:
     techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
 cristian_idx = next((i for i,x in enumerate(techs) if 'cristian' in str(x).lower()), 0)
 tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
-    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
-    f=p.copy()
-    if tech!='TUTTI': f=f[f.assegnato==tech]
-    if stato!='TUTTI': f=f[f.stato_ui==stato]
-    if mese!='TUTTI': f=f[f.mese_nome==mese]
-    c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
-    if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
-    st.subheader('Manutenzioni')
+stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
+f=p.copy()
+if tech!='TUTTI': f=f[f.assegnato==tech]
+if stato!='TUTTI': f=f[f.stato_ui==stato]
+if mese!='TUTTI': f=f[f.mese_nome==mese]
+c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
+if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
+st.subheader('Manutenzioni')
 st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono registrate.')
 q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
     if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
