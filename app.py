@@ -1,0 +1,164 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime, date
+from supabase import create_client
+
+st.set_page_config(page_title="TESYX Manutenzioni", page_icon="🛠️", layout="wide")
+MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile',4),('mag','Maggio',5),('giu','Giugno',6),('lug','Luglio',7),('ago','Agosto',8),('sett','Settembre',9),('ott','Ottobre',10),('nov','Novembre',11),('dic','Dicembre',12)]
+XLS='impianti.xlsx'
+
+@st.cache_resource
+def db():
+    return create_client(st.secrets['SUPABASE_URL'], st.secrets['SUPABASE_SERVICE_KEY'])
+
+@st.cache_data
+def source():
+    d=pd.read_excel(XLS,sheet_name='Foglio1')
+    d=d[d[['numimp','matrimp','ragsoc','ubivia']].notna().any(axis=1)].copy()
+    d['codice']=d['numimp'].fillna('').astype(str).str.strip()
+    d.loc[d['codice'].eq(''),'codice']='MATR-'+d['matrimp'].fillna('').astype(str).str.strip()
+    d['Manutentore']=d['Manutentore'].fillna('Non assegnato').replace('', 'Non assegnato')
+    return d
+
+def all_rows(table, cols='*'):
+    s=db(); rows=[]; start=0; step=1000
+    while True:
+        r=s.table(table).select(cols).range(start,start+step-1).execute().data
+        rows.extend(r)
+        if len(r)<step: break
+        start+=step
+    return rows
+
+def seed_if_needed():
+    s=db()
+    n=s.table('impianti').select('id',count='exact').limit(1).execute().count or 0
+    if n: return
+    d=source(); rec=[]
+    for _,r in d.iterrows():
+        rec.append({'codice':str(r.codice),'matricola':None if pd.isna(r.matrimp) else str(r.matrimp),'cliente':None if pd.isna(r.ragsoc) else str(r.ragsoc),'indirizzo':None if pd.isna(r.ubivia) else str(r.ubivia),'comune':None if pd.isna(r.ubicitta) else str(r.ubicitta),'provincia':None if pd.isna(r.ubiprov) else str(r.ubiprov),'tecnico_assegnato':str(r.Manutentore)})
+    # dedup by code, preserving first occurrence
+    uniq={x['codice']:x for x in rec}; vals=list(uniq.values())
+    for i in range(0,len(vals),200): s.table('impianti').insert(vals[i:i+200]).execute()
+    imps={x['codice']:x['id'] for x in all_rows('impianti','id,codice')}
+    pro=[]
+    for _,r in d.drop_duplicates('codice').iterrows():
+        if r.codice not in imps: continue
+        x={'impianto_id':imps[r.codice],'anno':2026}
+        for col,nome,num in MESI: x[nome.lower()]=str(r.get(col,'')).strip().upper()=='S'
+        pro.append(x)
+    for i in range(0,len(pro),200): s.table('programmazione').insert(pro[i:i+200]).execute()
+
+def ensure_jobs(year):
+    s=db(); imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
+    if imps.empty: return
+    prs=pd.DataFrame(all_rows('programmazione','*'))
+    if year not in set(prs.get('anno',pd.Series(dtype=int)).tolist()):
+        # for test, copy annual plan from 2026 to selected year
+        base=prs[prs.anno==2026].copy()
+        if not base.empty:
+            vals=[]
+            for _,r in base.iterrows():
+                x={'impianto_id':int(r.impianto_id),'anno':year}
+                for _,nome,_ in MESI: x[nome.lower()]=bool(r[nome.lower()])
+                vals.append(x)
+            for i in range(0,len(vals),200): s.table('programmazione').insert(vals[i:i+200]).execute()
+            prs=pd.DataFrame(all_rows('programmazione','*'))
+    existing={(x['impianto_id'],x['anno_competenza'],x['mese_competenza']) for x in all_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza')}
+    vals=[]
+    for _,r in prs[prs.anno==year].iterrows():
+        tech=imps.loc[imps.id==r.impianto_id,'tecnico_assegnato']; tech=tech.iloc[0] if len(tech) else None
+        for _,nome,num in MESI:
+            if bool(r[nome.lower()]) and (int(r.impianto_id),year,num) not in existing:
+                vals.append({'impianto_id':int(r.impianto_id),'anno_competenza':year,'mese_competenza':num,'tecnico_assegnato':tech,'stato':'DA_FARE'})
+    for i in range(0,len(vals),200): s.table('manutenzioni').insert(vals[i:i+200]).execute()
+
+@st.cache_data(ttl=15)
+def dataset(year):
+    jobs=pd.DataFrame(all_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,note'))
+    imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
+    if jobs.empty or imps.empty: return pd.DataFrame()
+    p=jobs[jobs.anno_competenza==year].merge(imps,left_on='impianto_id',right_on='id',suffixes=('','_imp'))
+    p['mese_nome']=p.mese_competenza.map({n:nome for _,nome,n in MESI})
+    now=datetime.now(); current=now.month if year==now.year else (13 if year<now.year else 0)
+    p['stato_ui']=p.apply(lambda r:'ESEGUITA' if r.stato=='ESEGUITA' else ('SCADUTA' if r.mese_competenza<current else 'DA FARE'),axis=1)
+    p['assegnato']=p['tecnico_assegnato_imp'].fillna(p['tecnico_assegnato']).fillna('Non assegnato')
+    return p
+
+def operators():
+    x=all_rows('tecnici','nome,attivo'); return sorted([r['nome'] for r in x if r.get('attivo',True)])
+
+def close_job(job_id, oper, dt, sem, note):
+    ts=datetime.combine(dt,datetime.now().time()).astimezone().isoformat()
+    db().table('manutenzioni').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'note':note}).eq('id',int(job_id)).execute()
+    dataset.clear()
+
+try:
+    seed_if_needed()
+except Exception as e:
+    st.error('Impossibile inizializzare il database. Controlla i Secrets di Streamlit.'); st.exception(e); st.stop()
+
+st.title('🛠️ TESYX · Gestione Manutenzioni')
+area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'])
+year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
+ensure_jobs(year); p=dataset(year); now=datetime.now()
+if p.empty: st.warning('Nessuna manutenzione disponibile.'); st.stop()
+
+if area=='📊 Amministratore':
+    st.subheader('📊 Dashboard Amministratore')
+    month_num=st.selectbox('Periodo',range(1,13),index=now.month-1,format_func=lambda x:MESI[x-1][1])
+    pm=p[p.mese_competenza==month_num].copy(); overdue=p[(p.stato_ui=='SCADUTA') & (p.mese_competenza<month_num if year==now.year else True)]
+    total=len(pm); done=(pm.stato_ui=='ESEGUITA').sum(); todo=(pm.stato_ui=='DA FARE').sum(); sem=int(pm.semestrale.fillna(False).astype(bool).sum())
+    a,b,c,d,e=st.columns(5); a.metric('Programmate',total); b.metric('🟢 Eseguite',done); c.metric('🟠 Da fare',todo); d.metric('🔴 Scadute precedenti',len(overdue)); e.metric('Semestrali eseguite',sem)
+    if total: st.progress(done/total,text=f'Avanzamento {done/total*100:.1f}%')
+    st.markdown('### Andamento per tecnico assegnatario')
+    rows=[]
+    for t,g in pm.groupby('assegnato',dropna=False):
+        n=len(g); ex=(g.stato_ui=='ESEGUITA').sum(); rows.append([t,n,ex,n-ex,round(ex/n*100,1) if n else 0])
+    st.dataframe(pd.DataFrame(rows,columns=['Tecnico','Previste','Eseguite','Mancanti','Avanzamento %']),hide_index=True,use_container_width=True)
+    st.markdown('### Lavoro realmente eseguito dai tecnici')
+    exm=pm[pm.stato_ui=='ESEGUITA'].copy()
+    if exm.empty: st.info('Nessuna manutenzione registrata nel periodo.')
+    else:
+        st.dataframe(exm.groupby('tecnico_esecutore').size().reset_index(name='Manutenzioni eseguite').sort_values('Manutenzioni eseguite',ascending=False),hide_index=True,use_container_width=True)
+        exm['giorno']=pd.to_datetime(exm.eseguita_il,errors='coerce').dt.date
+        st.markdown('### Attività giornaliera')
+        st.dataframe(exm.groupby(['giorno','tecnico_esecutore']).size().reset_index(name='Manutenzioni').sort_values(['giorno','tecnico_esecutore'],ascending=[False,True]),hide_index=True,use_container_width=True)
+    st.markdown('### 🔴 Criticità')
+    if overdue.empty: st.success('Nessuna manutenzione arretrata.')
+    else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
+else:
+    techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist()); tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=(techs.index('Cristian') if 'Cristian' in techs else 0))
+    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
+    f=p.copy()
+    if tech!='TUTTI': f=f[f.assegnato==tech]
+    if stato!='TUTTI': f=f[f.stato_ui==stato]
+    if mese!='TUTTI': f=f[f.mese_nome==mese]
+    c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
+    if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
+    st.subheader('Manutenzioni'); q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
+    if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
+    if 'selected_job' in st.session_state:
+        rr=p[p.id_x==st.session_state.selected_job]
+        if not rr.empty:
+            r=rr.iloc[0]
+            with st.container(border=True):
+                st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
+                cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
+                sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
+                b1,b2=st.columns([3,1])
+                if b1.button('CONFERMA E CHIUDI MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
+                if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
+    if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
+    else:
+        order={'SCADUTA':0,'DA FARE':1,'ESEGUITA':2}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
+        page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
+        for _,r in f.iloc[start:start+page_size].iterrows():
+            with st.container(border=True):
+                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
+                if r.stato_ui!='ESEGUITA':
+                    if c.button('APRI MANUTENZIONE',key='do_'+str(r.id_x),use_container_width=True,type='primary'): st.session_state.selected_job=int(r.id_x); st.rerun()
+                else:
+                    c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
+                    if bool(r.semestrale): c.caption('☑ Semestrale')
+
+st.caption('Versione ONLINE TEST · Dati condivisi su Supabase.')
