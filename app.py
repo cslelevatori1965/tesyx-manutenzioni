@@ -195,4 +195,4 @@ else:
                         c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                         if bool(r.semestrale): c.caption('☑ Semestrale')
   
-  st.caption('Versione CRISTIAN TEST · Dati condivisi online su Supabase · Area Amministratore disponibile dal menu laterale.')
+    st.caption('Versione CRISTIAN TEST · Dati condivisi online su Supabase · Area Amministratore disponibile dal menu laterale.')
