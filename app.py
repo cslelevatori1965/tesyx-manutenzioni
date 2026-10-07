@@ -165,8 +165,8 @@ if 'selected_job' in st.session_state:
                 b1,b2=st.columns([3,1])
                 if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
-    if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
-    else:
+if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
+else:
         order={'SCADUTA':0,'DA FARE':1,'ESEGUITA':2}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
         page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
         for _,r in f.iloc[start:start+page_size].iterrows():
