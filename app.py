@@ -153,9 +153,9 @@ else:
     tech = st.sidebar.selectbox('Tecnico assegnatario', techs, index=cristian_idx)
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
-  if tech!='TUTTI': f=f[f.assegnato==tech]
-  if stato!='TUTTI': f=f[f.stato_ui==stato]
-  if mese!='TUTTI': f=f[f.mese_nome==mese]
+    if tech!='TUTTI': f=f[f.assegnato==tech]
+    if stato!='TUTTI': f=f[f.stato_ui==stato]
+    if mese!='TUTTI': f=f[f.mese_nome==mese]
   c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
   if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
   st.subheader('Manutenzioni')
