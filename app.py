@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+import hashlib
+import re
 from supabase import create_client
 
 st.set_page_config(page_title="TESYX Manutenzioni", page_icon="🛠️", layout="wide")
@@ -16,6 +18,13 @@ st.markdown("""
 MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile',4),('mag','Maggio',5),('giu','Giugno',6),('lug','Luglio',7),('ago','Agosto',8),('sett','Settembre',9),('ott','Ottobre',10),('nov','Novembre',11),('dic','Dicembre',12)]
 XLS='impianti.xlsx'
 
+# Nuovo archivio indipendente dal precedente
+TABLES = {'impianti':'impianti_v2','programmazione':'programmazione_v2','manutenzioni':'manutenzioni_v2','storico_annullamenti':'storico_annullamenti_v2','tecnici':'tecnici_v2'}
+
+def table(name):
+    return TABLES.get(name, name)
+
+
 @st.cache_resource
 def db():
     url = st.secrets.get("SUPABASE_URL")
@@ -24,66 +33,107 @@ def db():
         raise RuntimeError("Mancano SUPABASE_URL o SUPABASE_KEY nei Secrets di Streamlit.")
     return create_client(url, key)
 
-@st.cache_data
-def source():
-    d=pd.read_excel(XLS,sheet_name='Foglio1')
-    d=d[d[['numimp','matrimp','ragsoc','ubivia']].notna().any(axis=1)].copy()
-    d['codice']=d['numimp'].fillna('').astype(str).str.strip()
-    d.loc[d['codice'].eq(''),'codice']='MATR-'+d['matrimp'].fillna('').astype(str).str.strip()
-    d['Manutentore']=d['Manutentore'].fillna('Non assegnato').replace('', 'Non assegnato')
-    return d
+def clean(v):
+    if pd.isna(v): return ''
+    return str(v).strip()
+
+
+def months_for_cadence(code):
+    code=clean(code).upper().replace(' ', '')
+    if code in ('M','M1','MENSILE'): return list(range(1,13))
+    match=re.fullmatch(r'([BTQS])([1-9][0-9]*)',code)
+    if not match: return None
+    period={'B':2,'T':3,'Q':4,'S':6}[match.group(1)]
+    offset=int(match.group(2))
+    if offset<1 or offset>period: return None
+    return list(range(offset,13,period))
+
+
+def import_frame(upload):
+    df=pd.read_excel(upload,sheet_name=0,dtype=str).fillna('')
+    df.columns=[str(c).strip().upper() for c in df.columns]
+    required=['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA',"CITTA'",'UBICAZIONE','TIPO MANUT.','MANUTENTORE']
+    missing=[c for c in required if c not in df.columns]
+    if missing: raise ValueError('Colonne mancanti: '+', '.join(missing))
+    df=df[df[['RAG. SOCIALE','NUMERO MATRICOLA','UBICAZIONE']].ne('').any(axis=1)].copy()
+    df=df[~df['RAG. SOCIALE'].str.contains(r'ASCENSORI\s+SERVIZI',case=False,na=False,regex=True)].copy()
+    df['TIPO MANUT.']=df['TIPO MANUT.'].str.strip().str.upper()
+    df['mesi']=df['TIPO MANUT.'].map(months_for_cadence)
+    # Identificativo stabile per questa importazione, non derivato da PROGR. (riparte per tecnico).
+    df['codice_import']=df.apply(lambda r:'ROB-'+hashlib.sha256('|'.join([clean(r.get('COD. CLIENTE')),clean(r.get('NUMERO MATRICOLA')),clean(r.get('UBICAZIONE')),clean(r.get("CITTA'"),),clean(r.get('NUMERO FABBRICA'))]).upper().encode()).hexdigest()[:20],axis=1)
+    if df['codice_import'].duplicated().any():
+        dup=df[df['codice_import'].duplicated(False)]
+        raise ValueError(f'Trovate {len(dup)} righe con identificativo duplicato: controllare matricola e indirizzo prima di importare.')
+    return df
+
+
+def import_new_archive(df):
+    client=db()
+    # Blocca importazioni ripetute; nessuna cancellazione automatica.
+    count=client.table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
+    if count: raise ValueError('Archivio già popolato. Importazione bloccata per proteggere i dati.')
+    records=[]
+    for _,r in df.iterrows():
+        prog=clean(r.get('PROGR.'))
+        try: prog=int(float(prog)) if prog else None
+        except ValueError: prog=None
+        records.append({'codice':r['codice_import'],'codice_cliente':clean(r.get('COD. CLIENTE')) or None,'cliente':clean(r.get('RAG. SOCIALE')) or None,'matricola':clean(r.get('NUMERO MATRICOLA')) or None,'numero_fabbrica':clean(r.get('NUMERO FABBRICA')) or None,'cap':clean(r.get('CAP')) or None,'comune':clean(r.get("CITTA'")) or None,'indirizzo':clean(r.get('UBICAZIONE')) or None,'provincia':clean(r.get('PROV.')) or None,'tipo_manutenzione':clean(r.get('TIPO MANUT.')) or None,'progressivo':prog,'tecnico_assegnato':clean(r.get('MANUTENTORE')) or 'Non assegnato','note':clean(r.get('NOTE')) or None})
+    for i in range(0,len(records),150): client.table('impianti_v2').insert(records[i:i+150]).execute()
+    id_map={r['codice']:r['id'] for r in all_rows('impianti','id,codice')}
+    year=date.today().year
+    plans=[]; jobs=[]
+    for (_,r),rec in zip(df.iterrows(),records):
+        months=r['mesi'] or []
+        iid=id_map[rec['codice']]
+        plan={'impianto_id':iid,'anno':year}
+        for _,name,num in MESI: plan[name.lower()]=num in months
+        plans.append(plan)
+        for month in months:
+            jobs.append({'impianto_id':iid,'anno_competenza':year,'mese_competenza':month,'tecnico_assegnato':rec['tecnico_assegnato'],'stato':'DA_FARE'})
+    for i in range(0,len(plans),150): client.table('programmazione_v2').insert(plans[i:i+150]).execute()
+    for i in range(0,len(jobs),150): client.table('manutenzioni_v2').insert(jobs[i:i+150]).execute()
+    names=sorted(set(r['tecnico_assegnato'] for r in records if r['tecnico_assegnato']!='Non assegnato'))
+    for name in names: client.table('tecnici_v2').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
+    dataset.clear()
+    return len(records),len(jobs),len(names)
 
 def all_rows(table, cols='*'):
     s=db(); rows=[]; start=0; step=1000
     while True:
-        r=s.table(table).select(cols).range(start,start+step-1).execute().data
+        r=s.table(globals()["table"](table)).select(cols).range(start,start+step-1).execute().data
         rows.extend(r)
         if len(r)<step: break
         start+=step
     return rows
 
 def seed_if_needed():
-    s=db()
-    n=s.table('impianti').select('id',count='exact').limit(1).execute().count or 0
-    if n: return
-    d=source(); rec=[]
-    for _,r in d.iterrows():
-        rec.append({'codice':str(r.codice),'matricola':None if pd.isna(r.matrimp) else str(r.matrimp),'cliente':None if pd.isna(r.ragsoc) else str(r.ragsoc),'indirizzo':None if pd.isna(r.ubivia) else str(r.ubivia),'comune':None if pd.isna(r.ubicitta) else str(r.ubicitta),'provincia':None if pd.isna(r.ubiprov) else str(r.ubiprov),'tecnico_assegnato':str(r.Manutentore)})
-    # dedup by code, preserving first occurrence
-    uniq={x['codice']:x for x in rec}; vals=list(uniq.values())
-    for i in range(0,len(vals),200): s.table('impianti').insert(vals[i:i+200]).execute()
-    imps={x['codice']:x['id'] for x in all_rows('impianti','id,codice')}
-    pro=[]
-    for _,r in d.drop_duplicates('codice').iterrows():
-        if r.codice not in imps: continue
-        x={'impianto_id':imps[r.codice],'anno':2026}
-        for col,nome,num in MESI: x[nome.lower()]=str(r.get(col,'')).strip().upper()=='S'
-        pro.append(x)
-    for i in range(0,len(pro),200): s.table('programmazione').insert(pro[i:i+200]).execute()
+    # La nuova base dati viene caricata esclusivamente da Amministratore.
+    return
 
 def ensure_jobs(year):
     s=db(); imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
     if imps.empty: return
     prs=pd.DataFrame(all_rows('programmazione','*'))
-    if year not in set(prs.get('anno',pd.Series(dtype=int)).tolist()):
+    if not prs.empty and year not in set(prs.get('anno',pd.Series(dtype=int)).tolist()):
         # for test, copy annual plan from 2026 to selected year
-        base=prs[prs.anno==2026].copy()
+        base=prs[prs.anno==min(prs.anno)].copy()
         if not base.empty:
             vals=[]
             for _,r in base.iterrows():
                 x={'impianto_id':int(r.impianto_id),'anno':year}
                 for _,nome,_ in MESI: x[nome.lower()]=bool(r[nome.lower()])
                 vals.append(x)
-            for i in range(0,len(vals),200): s.table('programmazione').insert(vals[i:i+200]).execute()
+            for i in range(0,len(vals),200): s.table('programmazione_v2').insert(vals[i:i+200]).execute()
             prs=pd.DataFrame(all_rows('programmazione','*'))
     existing={(x['impianto_id'],x['anno_competenza'],x['mese_competenza']) for x in all_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza')}
     vals=[]
+    if prs.empty: return
     for _,r in prs[prs.anno==year].iterrows():
         tech=imps.loc[imps.id==r.impianto_id,'tecnico_assegnato']; tech=tech.iloc[0] if len(tech) else None
         for _,nome,num in MESI:
-            if bool(r[nome.lower()]) and (int(r.impianto_id),year,num) not in existing:
+            if r[nome.lower()] is True and (int(r.impianto_id),year,num) not in existing:
                 vals.append({'impianto_id':int(r.impianto_id),'anno_competenza':year,'mese_competenza':num,'tecnico_assegnato':tech,'stato':'DA_FARE'})
-    for i in range(0,len(vals),200): s.table('manutenzioni').insert(vals[i:i+200]).execute()
+    for i in range(0,len(vals),200): s.table('manutenzioni_v2').insert(vals[i:i+200]).execute()
 
 @st.cache_data(ttl=15)
 def dataset(year):
@@ -102,13 +152,13 @@ def operators():
 
 def close_job(job_id, oper, dt, sem, note):
     ts=datetime.combine(dt,datetime.now().time()).astimezone().isoformat()
-    db().table('manutenzioni').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'note':note}).eq('id',int(job_id)).execute()
+    db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'note':note}).eq('id',int(job_id)).execute()
     dataset.clear()
 
 def cancel_job(job_id, reason):
     # Conserva una copia completa PRIMA di modificare il record.
     client = db()
-    result = client.table('manutenzioni').select('*').eq('id',int(job_id)).execute().data
+    result = client.table('manutenzioni_v2').select('*').eq('id',int(job_id)).execute().data
     if len(result)!=1 or result[0].get('stato')!='ESEGUITA':
         raise ValueError('Questa manutenzione non risulta eseguita o non esiste più.')
     old = result[0]
@@ -118,8 +168,8 @@ def cancel_job(job_id, reason):
         'motivo': reason,
         'annullato_il': datetime.now().astimezone().isoformat()
     }
-    client.table('storico_annullamenti').insert(audit).execute()
-    client.table('manutenzioni').update({
+    client.table('storico_annullamenti_v2').insert(audit).execute()
+    client.table('manutenzioni_v2').update({
         'stato':'DA_FARE', 'tecnico_esecutore':None,
         'eseguita_il':None, 'semestrale':False, 'note':None
     }).eq('id',int(job_id)).eq('stato','ESEGUITA').execute()
@@ -134,7 +184,7 @@ st.title('🛠️ TESYX · Gestione Manutenzioni')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 ensure_jobs(year); p=dataset(year); now=datetime.now()
-if p.empty: st.warning('Nessuna manutenzione disponibile.'); st.stop()
+if p.empty and area!='📊 Amministratore': st.warning('Nessuna manutenzione disponibile. Chiedi all’amministratore di importare il file Excel.'); st.stop()
 
 if area=='📊 Amministratore':
     admin_password = st.secrets.get('ADMIN_PASSWORD')
@@ -144,6 +194,34 @@ if area=='📊 Amministratore':
     entered = st.sidebar.text_input('Password amministratore', type='password', key='admin_password')
     if entered != admin_password:
         st.info('Inserisci la password amministratore per accedere.')
+        st.stop()
+    st.subheader('📥 Importazione archivio impianti')
+    count=db().table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
+    st.write(f'Impianti presenti nel nuovo archivio: **{count}**')
+    if count==0:
+        upload=st.file_uploader('Carica Lista impianti Roberto – progressivi corretti (.xlsx)',type=['xlsx'])
+        if upload is not None:
+            try:
+                preview=import_frame(upload)
+                anomalies=preview[preview['mesi'].map(lambda x: x is None)]
+                st.write(f'Righe valide: **{len(preview)}** · Cadenze da verificare: **{len(anomalies)}**')
+                if len(anomalies):
+                    st.warning('Le righe con cadenza non riconosciuta verranno importate senza manutenzioni programmate.')
+                    st.dataframe(anomalies[['RAG. SOCIALE','NUMERO MATRICOLA','TIPO MANUT.']].head(50),hide_index=True)
+                st.dataframe(preview[['RAG. SOCIALE','NUMERO MATRICOLA','TIPO MANUT.','MANUTENTORE']].head(12),hide_index=True)
+                agree=st.checkbox('Confermo importazione iniziale nel nuovo archivio')
+                if st.button('IMPORTA IMPIANTI',type='primary',disabled=not agree):
+                    with st.spinner('Importazione in corso. Non chiudere la pagina.'):
+                        n,j,t=import_new_archive(preview)
+                    st.success(f'Importati {n} impianti, {j} manutenzioni e {t} tecnici.')
+                    st.rerun()
+            except Exception as exc:
+                st.error('Importazione non eseguita o incompleta: '+str(exc))
+    else:
+        st.info('Archivio già inizializzato. Le importazioni successive richiederanno una funzione di aggiornamento protetto.')
+    st.divider()
+    if p.empty:
+        st.info('Carica prima l’Excel per visualizzare la dashboard.')
         st.stop()
     st.subheader('📊 Dashboard Amministratore')
     month_num=st.selectbox('Periodo',range(1,13),index=now.month-1,format_func=lambda x:MESI[x-1][1])
@@ -207,7 +285,7 @@ if area=='📊 Amministratore':
     else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
 else:
     techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
-    cristian_idx = next((i for i,x in enumerate(techs) if 'cristian' in str(x).lower()), 0)
+    cristian_idx = 0
     tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
@@ -226,7 +304,7 @@ else:
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
-                cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
+                cc1,cc2=st.columns(2); ops=operators(); default=ops.index(r['assegnato']) if r['assegnato'] in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
                 sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
                 b1,b2=st.columns([3,1])
                 if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r['id'],oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
@@ -244,4 +322,4 @@ else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                     if bool(r.semestrale): c.caption('☑ Semestrale')
 
-st.caption('Versione CRISTIAN TEST · Dati condivisi online su Supabase · Area Amministratore disponibile dal menu laterale.')
+st.caption('TESYX Manutenzioni v2 · Archivio separato · Dati condivisi online su Supabase.')
