@@ -61,9 +61,11 @@ def import_frame(upload):
     df['mesi']=df['TIPO MANUT.'].map(months_for_cadence)
     # Identificativo stabile per questa importazione, non derivato da PROGR. (riparte per tecnico).
     df['codice_import']=df.apply(lambda r:'ROB-'+hashlib.sha256('|'.join([clean(r.get('COD. CLIENTE')),clean(r.get('NUMERO MATRICOLA')),clean(r.get('UBICAZIONE')),clean(r.get("CITTA'"),),clean(r.get('NUMERO FABBRICA'))]).upper().encode()).hexdigest()[:20],axis=1)
-    if df['codice_import'].duplicated().any():
-        dup=df[df['codice_import'].duplicated(False)]
-        raise ValueError(f'Trovate {len(dup)} righe con identificativo duplicato: controllare matricola e indirizzo prima di importare.')
+    # Alcuni impianti distinti condividono indirizzo e hanno matricola assente.
+    # Conserviamo ogni riga assegnando un suffisso stabile nell'ordine del file.
+    ordinal=df.groupby('codice_import',sort=False).cumcount()
+    repeated=df['codice_import'].duplicated(keep=False)
+    df.loc[repeated,'codice_import']=df.loc[repeated,'codice_import']+'-'+(ordinal[repeated]+1).astype(str)
     return df
 
 
