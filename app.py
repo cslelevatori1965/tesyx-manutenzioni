@@ -74,6 +74,11 @@ def import_new_archive(df):
     # Blocca importazioni ripetute; nessuna cancellazione automatica.
     count=client.table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
     if count: raise ValueError('Archivio già popolato. Importazione bloccata per proteggere i dati.')
+    # Validate every cadence before writing anything to the database.
+    invalid=df[df['mesi'].map(lambda v: not isinstance(v,list))]
+    if not invalid.empty:
+        examples=', '.join(f"riga {int(i)+2}: {r['TIPO MANUT.'] or '(vuota)'}" for i,r in invalid.head(12).iterrows())
+        raise ValueError(f'Cadenze non riconosciute in {len(invalid)} righe ({examples}). Correggere prima di importare.')
     records=[]
     for _,r in df.iterrows():
         prog=clean(r.get('PROGR.'))
@@ -85,7 +90,7 @@ def import_new_archive(df):
     year=date.today().year
     plans=[]; jobs=[]
     for (_,r),rec in zip(df.iterrows(),records):
-        months=r['mesi'] or []
+        months=r['mesi'] if isinstance(r['mesi'],list) else []
         iid=id_map[rec['codice']]
         plan={'impianto_id':iid,'anno':year}
         for _,name,num in MESI: plan[name.lower()]=num in months
