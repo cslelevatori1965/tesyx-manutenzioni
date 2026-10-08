@@ -180,7 +180,7 @@ else:
                     cc1,cc2=st.columns(2); ops=operators(); default=ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
                     sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
                     b1,b2=st.columns([3,1])
-                    if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r.id_x,oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
+                    if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r['id_x'],oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                     if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
