@@ -13,9 +13,9 @@ st.markdown("""
   .block-container {padding-top: 1rem; padding-left: .65rem; padding-right: .65rem;}
   div[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.25); padding: .45rem; border-radius: .65rem;}
   .stButton > button {min-height: 3rem; font-weight: 700;}
-  .st-key-registration_button button {background-color:#15803d !important; border-color:#15803d !important; color:white !important;}
-  div[class*="st-key-blocked_"] button {background-color:#b91c1c !important; border-color:#b91c1c !important; color:white !important; opacity:1 !important;}
 }
+  div[class*="st-key-registration_button_"] button {background-color:#15803d !important; border-color:#15803d !important; color:white !important;}
+  div[class*="st-key-blocked_"] button {background-color:#b91c1c !important; border-color:#b91c1c !important; color:white !important; opacity:1 !important;}
 </style>
 """, unsafe_allow_html=True)
 MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile',4),('mag','Maggio',5),('giu','Giugno',6),('lug','Luglio',7),('ago','Agosto',8),('sett','Settembre',9),('ott','Ottobre',10),('nov','Novembre',11),('dic','Dicembre',12)]
@@ -449,7 +449,7 @@ else:
             with st.container(border=True):
                 a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui in ('SCADUTA','DA NON FARE') else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · PROGR. {r['progressivo'] if pd.notna(r['progressivo']) else '-'} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
                 if r.stato_ui in ('DA FARE','SCADUTA'):
-                    with c.container(key='registration_button'):
+                    with c.container(key='registration_button_'+str(r['id'])):
                         if st.button('REGISTRA MANUTENZIONE',key='do_'+str(r['id']),use_container_width=True,type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
                 elif r.stato_ui=='DA NON FARE':
                     c.button('DA NON FARE',key='blocked_'+str(r['id']),disabled=True,use_container_width=True,type='primary')
