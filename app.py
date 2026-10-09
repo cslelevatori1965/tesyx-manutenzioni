@@ -6,7 +6,7 @@ import hashlib
 import re
 from supabase import create_client
 
-st.set_page_config(page_title="TESYX Manutenzioni", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Ascensori Servizi & Tesyx", page_icon="🛠️", layout="wide")
 st.markdown("""
 <style>
 @media (max-width: 700px) {
