@@ -260,7 +260,7 @@ try:
 except Exception as e:
     st.error('Impossibile inizializzare il database. Controlla i Secrets di Streamlit.'); st.exception(e); st.stop()
 
-st.title('🛠️ TESYX · Gestione Manutenzioni')
+st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 ensure_jobs(year); p=dataset(year); now=datetime.now()
