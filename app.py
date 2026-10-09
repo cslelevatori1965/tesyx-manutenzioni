@@ -40,12 +40,15 @@ def clean(v):
 
 def months_for_cadence(code):
     code=clean(code).upper().replace(' ', '')
+    if not code: return []  # impianto presente, cadenza da assegnare
     if code in ('M','M1','MENSILE'): return list(range(1,13))
+    if code == 'ST8': return [8]
+    if code == 'ST10': return [10]
+    if code in ('ST8-3/10', 'ST8-03/10'): return [3,10]
     match=re.fullmatch(r'([BTQS])([1-9][0-9]*)',code)
     if not match: return None
     period={'B':2,'T':3,'Q':4,'S':6}[match.group(1)]
-    offset=int(match.group(2))
-    if offset<1 or offset>period: return None
+    offset=(int(match.group(2))-1)%period+1
     return list(range(offset,13,period))
 
 
@@ -55,8 +58,8 @@ def import_frame(upload):
     required=['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA',"CITTA'",'UBICAZIONE','TIPO MANUT.','MANUTENTORE']
     missing=[c for c in required if c not in df.columns]
     if missing: raise ValueError('Colonne mancanti: '+', '.join(missing))
-    df=df[df[['RAG. SOCIALE','NUMERO MATRICOLA','UBICAZIONE']].ne('').any(axis=1)].copy()
-    df=df[~df['RAG. SOCIALE'].str.contains(r'ASCENSORI\s+SERVIZI',case=False,na=False,regex=True)].copy()
+    # Conserva tutte le righe del foglio: nessuna esclusione implicita.
+    # Le eventuali intestazioni 'Servizi' sono segnalate in anteprima.
     df['TIPO MANUT.']=df['TIPO MANUT.'].str.strip().str.upper()
     df['mesi']=df['TIPO MANUT.'].map(months_for_cadence)
     # Identificativo stabile per questa importazione, non derivato da PROGR. (riparte per tecnico).
@@ -211,13 +214,15 @@ if area=='📊 Amministratore':
             try:
                 preview=import_frame(upload)
                 anomalies=preview[preview['mesi'].map(lambda x: x is None)]
-                st.write(f'Righe valide: **{len(preview)}** · Cadenze da verificare: **{len(anomalies)}**')
+                st.write(f'Righe del file: **{len(preview)}** · Cadenze non riconosciute: **{len(anomalies)}** · Senza cadenza: **{sum(preview["TIPO MANUT."].eq(""))}**')
+                servizi=preview['RAG. SOCIALE'].str.contains(r'ASCENSORI\s+SERVIZI',case=False,na=False,regex=True).sum()
+                if servizi: st.warning(f'ATTENZIONE: {servizi} righe contengono ASCENSORI SERVIZI nella ragione sociale. Non sono state escluse automaticamente: verifica prima di importare.')
                 if len(anomalies):
-                    st.warning('Le righe con cadenza non riconosciuta verranno importate senza manutenzioni programmate.')
+                    st.error('Correggere le cadenze non riconosciute prima di importare.')
                     st.dataframe(anomalies[['RAG. SOCIALE','NUMERO MATRICOLA','TIPO MANUT.']].head(50),hide_index=True)
                 st.dataframe(preview[['RAG. SOCIALE','NUMERO MATRICOLA','TIPO MANUT.','MANUTENTORE']].head(12),hide_index=True)
-                agree=st.checkbox('Confermo importazione iniziale nel nuovo archivio')
-                if st.button('IMPORTA IMPIANTI',type='primary',disabled=not agree):
+                agree=st.checkbox('Confermo di aver verificato anche le intestazioni Servizi e di voler importare tutte le righe')
+                if st.button('IMPORTA IMPIANTI',type='primary',disabled=(not agree or len(anomalies)>0)):
                     with st.spinner('Importazione in corso. Non chiudere la pagina.'):
                         n,j,t=import_new_archive(preview)
                     st.success(f'Importati {n} impianti, {j} manutenzioni e {t} tecnici.')
