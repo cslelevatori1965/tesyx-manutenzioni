@@ -222,6 +222,28 @@ def save_plant_status(plant_id, status, reason):
     dataset.clear()
 
 
+def street_sort_parts(address):
+    """Raggruppa le varianti di una via e ordina i civici numericamente.
+
+    Non stima distanze: per un percorso di prossimita servono coordinate.
+    """
+    raw=clean(address).upper()
+    raw=re.sub(r"[.,;]", " ", raw)
+    raw=re.sub(r"\s+", " ", raw).strip()
+    raw=re.sub(r"^(VIALE|VIA|VLE|V\s+LE|V\s+|PIAZZA|PZZA|P\s+ZA|PIAZZALE|LARGO|CORSO|STRADA|LOC\s+|LOCALITA)\s+", "", raw)
+    # Il civico viene estratto dal termine finale (es. 28/C, 28 C/O, 28).
+    found=re.search(r"(?:^|\s)(\d{1,4})(?:\s*[/\-]?\s*([A-Z]))?(?:\s|$)", raw)
+    if found:
+        street=raw[:found.start()].strip()
+        civic=int(found.group(1))
+        suffix=found.group(2) or ''
+    else:
+        street=raw
+        civic=999999
+        suffix=''
+    return street or raw, civic, suffix
+
+
 def operators():
     x=all_rows('tecnici','nome,attivo'); return sorted([r['nome'] for r in x if r.get('attivo',True)])
 
@@ -443,7 +465,16 @@ else:
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
-        order={'SCADUTA':0,'DA FARE':1,'DA NON FARE':2,'NON AVVIATA':3,'ESEGUITA':4}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
+        order={'SCADUTA':0,'DA FARE':1,'DA NON FARE':2,'NON AVVIATA':3,'ESEGUITA':4}
+        st.caption('Ordine per via: riunisce gli impianti della stessa strada e segue i numeri civici. La vicinanza tra strade diverse richiede una futura geolocalizzazione.')
+        route_order=st.checkbox('🗺️ Raggruppa il giro per via e numero civico',value=True,key='route_order')
+        f=f.assign(ord=f.stato_ui.map(order))
+        if route_order:
+            parts=f['indirizzo'].apply(street_sort_parts)
+            f=f.assign(via_giro=parts.map(lambda x:x[0]),civico_giro=parts.map(lambda x:x[1]),lettera_giro=parts.map(lambda x:x[2]))
+            f=f.sort_values(['assegnato','mese_competenza','comune','via_giro','civico_giro','lettera_giro','ord','progressivo'],kind='stable',na_position='last')
+        else:
+            f=f.sort_values(['ord','mese_competenza','comune','indirizzo'],kind='stable')
         page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
         for _,r in f.iloc[start:start+page_size].iterrows():
             with st.container(border=True):
