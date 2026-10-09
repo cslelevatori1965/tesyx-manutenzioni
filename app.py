@@ -190,6 +190,12 @@ try:
 except Exception as e:
     st.error('Impossibile inizializzare il database. Controlla i Secrets di Streamlit.'); st.exception(e); st.stop()
 
+
+st.markdown("""<style>
+div[class*="st-key-do_"] button {background-color: #188038 !important; color: white !important; border-color: #188038 !important;}
+div[class*="st-key-do_"] button:hover {background-color: #12652c !important; color: white !important;}
+</style>""", unsafe_allow_html=True)
+
 st.title('🛠️ TESYX · Gestione Manutenzioni')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
@@ -329,7 +335,7 @@ else:
             with st.container(border=True):
                 a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
                 if r.stato_ui!='ESEGUITA':
-                    if c.button('REGISTRA MANUTENZIONE',key='do_'+str(r['id']),use_container_width=True,type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
+                    if c.button('🟢 REGISTRA MANUTENZIONE',key='do_'+str(r['id']),use_container_width=True,type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                     if bool(r.semestrale): c.caption('☑ Semestrale')
