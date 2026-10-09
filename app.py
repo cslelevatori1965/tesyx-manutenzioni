@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 import hashlib
 import re
 from supabase import create_client
@@ -12,6 +13,8 @@ st.markdown("""
   .block-container {padding-top: 1rem; padding-left: .65rem; padding-right: .65rem;}
   div[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.25); padding: .45rem; border-radius: .65rem;}
   .stButton > button {min-height: 3rem; font-weight: 700;}
+  .st-key-registration_button button {background-color:#15803d !important; border-color:#15803d !important; color:white !important;}
+  div[class*="st-key-blocked_"] button {background-color:#b91c1c !important; border-color:#b91c1c !important; color:white !important; opacity:1 !important;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -147,22 +150,89 @@ def ensure_jobs(year):
 
 @st.cache_data(ttl=15)
 def dataset(year):
-    jobs=pd.DataFrame(all_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,note'))
-    imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
+    jobs=pd.DataFrame(all_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,biennale,scadenza_biennale,note'))
+    imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato,progressivo,note'))
     if jobs.empty or imps.empty: return pd.DataFrame()
     p=jobs[jobs.anno_competenza==year].merge(imps,left_on='impianto_id',right_on='id',suffixes=('','_imp'))
     p['mese_nome']=p.mese_competenza.map({n:nome for _,nome,n in MESI})
     now=datetime.now(); current=now.month if year==now.year else (13 if year<now.year else 0)
-    p['stato_ui']=p.apply(lambda r:'ESEGUITA' if r.stato=='ESEGUITA' else ('SCADUTA' if r.mese_competenza<current else 'DA FARE'),axis=1)
     p['assegnato']=p['tecnico_assegnato_imp'].fillna(p['tecnico_assegnato']).fillna('Non assegnato')
-    return p
+    p=p.rename(columns={'note_imp':'note_impianto'})
+    return apply_status(p)
+
+# Lo stato e le date di riattivazione sono in una tabella separata: nessuna
+# modifica ai 2.351 impianti, alle programmazioni o allo storico esistente.
+STATUS_TABLE = 'stati_impianti_v2'
+
+def get_status_overrides():
+    return {int(x['impianto_id']): x for x in all_rows(STATUS_TABLE, '*')}
+
+def initial_status(note):
+    text = clean(note).upper()
+    # Solo indicazioni esplicite, evitando frasi come "non fermo".
+    if re.search(r'\b(NON\s+FERMO|RIATTIVAT[OA]|RIMESSO\s+IN\s+SERVIZIO)\b', text):
+        return 'ATTIVO'
+    if re.search(r'\b(SOSPES[OA]|SOSPENSIONE)\b', text):
+        return 'SOSPESO'
+    if re.search(r'\b(FERM[OA]|FUORI\s+SERVIZIO)\b', text):
+        return 'FERMO'
+    if re.search(r'\b(DISDETT[OA])\b', text):
+        return 'DISDETTO'
+    if re.search(r'\b(CHIUS[OA])\b', text):
+        return 'CHIUSO'
+    return 'ATTIVO'
+
+def start_month_for_tech(name):
+    # Solo Cristian inizia a ottobre 2026; tutti gli altri a novembre.
+    return 10 if re.search(r'\bCRISTIAN\b', clean(name).upper()) else 11
+
+def apply_status(jobs):
+    if jobs.empty: return jobs
+    overrides = get_status_overrides()
+    jobs = jobs.copy()
+    def row_status(r):
+        override = overrides.get(int(r['impianto_id']))
+        status = override['stato'] if override else initial_status(r.get('note_impianto'))
+        if r['stato'] == 'ESEGUITA': return 'ESEGUITA'
+        if status != 'ATTIVO': return 'DA NON FARE'
+        # In caso di riattivazione non si recuperano i mesi antecedenti.
+        month = int(r['mese_competenza']); year = int(r['anno_competenza'])
+        if (year, month) < (2026, start_month_for_tech(r.get('assegnato'))):
+            return 'NON AVVIATA'
+        if override and override.get('data_riattivazione'):
+            try:
+                d = date.fromisoformat(str(override['data_riattivazione'])[:10])
+                if (year,month) < (d.year,d.month): return 'NON AVVIATA'
+            except ValueError: pass
+        now = date.today()
+        if (year,month) < (now.year,now.month): return 'SCADUTA'
+        return 'DA FARE'
+    jobs['stato_impianto'] = jobs['impianto_id'].map(lambda x: overrides.get(int(x), {}).get('stato'))
+    jobs['stato_impianto'] = jobs.apply(lambda r: r['stato_impianto'] or initial_status(r.get('note_impianto')),axis=1)
+    jobs['stato_ui'] = jobs.apply(row_status,axis=1)
+    return jobs
+
+def save_plant_status(plant_id, status, reason):
+    old = get_status_overrides().get(int(plant_id))
+    today = date.today().isoformat()
+    payload = {'impianto_id':int(plant_id),'stato':status, 'data_stato':today, 'aggiornato_il':datetime.now().astimezone().isoformat(),
+               'motivo':reason.strip() or None,
+               'data_riattivazione': today if status=='ATTIVO' and (not old or old['stato']!='ATTIVO') else (old.get('data_riattivazione') if old else None)}
+    db().table(STATUS_TABLE).upsert(payload,on_conflict='impianto_id').execute()
+    dataset.clear()
+
 
 def operators():
     x=all_rows('tecnici','nome,attivo'); return sorted([r['nome'] for r in x if r.get('attivo',True)])
 
-def close_job(job_id, oper, dt, sem, note):
+def close_job(job_id, oper, dt, sem, biennale, note):
+    current=dataset(date.today().year)
+    match=current[current['id']==int(job_id)] if not current.empty else pd.DataFrame()
+    if match.empty or match.iloc[0]['stato_ui'] not in ('DA FARE','SCADUTA'):
+        raise ValueError('Manutenzione non registrabile: impianto sospeso, non avviato o gia eseguito.')
     ts=datetime.combine(dt,datetime.now().time()).astimezone().isoformat()
-    db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'note':note}).eq('id',int(job_id)).execute()
+    scadenza = (dt + relativedelta(months=24)).isoformat() if biennale else None
+    db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).execute()
     dataset.clear()
 
 def cancel_job(job_id, reason):
@@ -181,7 +251,7 @@ def cancel_job(job_id, reason):
     client.table('storico_annullamenti_v2').insert(audit).execute()
     client.table('manutenzioni_v2').update({
         'stato':'DA_FARE', 'tecnico_esecutore':None,
-        'eseguita_il':None, 'semestrale':False, 'note':None
+        'eseguita_il':None, 'semestrale':False, 'biennale':False, 'scadenza_biennale':None, 'note':None
     }).eq('id',int(job_id)).eq('stato','ESEGUITA').execute()
     dataset.clear()
 
@@ -189,12 +259,6 @@ try:
     seed_if_needed()
 except Exception as e:
     st.error('Impossibile inizializzare il database. Controlla i Secrets di Streamlit.'); st.exception(e); st.stop()
-
-
-st.markdown("""<style>
-div[class*="st-key-do_"] button {background-color: #188038 !important; color: white !important; border-color: #188038 !important;}
-div[class*="st-key-do_"] button:hover {background-color: #12652c !important; color: white !important;}
-</style>""", unsafe_allow_html=True)
 
 st.title('🛠️ TESYX · Gestione Manutenzioni')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
@@ -238,15 +302,57 @@ if area=='📊 Amministratore':
     else:
         st.info('Archivio già inizializzato. Le importazioni successive richiederanno una funzione di aggiornamento protetto.')
     st.divider()
+    st.subheader('🚦 Stato impianti: fermo, sospeso e riattivazione')
+    st.caption('Le NOTE originali non vengono modificate. La riattivazione ha effetto dal mese corrente, senza arretrati.')
+    plants = pd.DataFrame(all_rows('impianti','id,cliente,indirizzo,comune,progressivo,tecnico_assegnato,note'))
+    if not plants.empty:
+        status_map = get_status_overrides()
+        plants['stato_attuale'] = plants.apply(lambda r:status_map.get(int(r['id']),{}).get('stato') or initial_status(r.get('note')),axis=1)
+        suspended = plants[plants['stato_attuale']!='ATTIVO']
+        st.write(f'Impianti non attivi: **{len(suspended)}**')
+        st.dataframe(suspended[['id','progressivo','cliente','indirizzo','tecnico_assegnato','stato_attuale','note']],hide_index=True,use_container_width=True)
+        query_plant=st.text_input('Cerca impianto da modificare (indirizzo, cliente, progressivo)')
+        found=plants.copy()
+        if query_plant.strip():
+            found=found[found[['cliente','indirizzo','comune','progressivo']].fillna('').astype(str).apply(lambda x:x.str.contains(query_plant,case=False,regex=False)).any(axis=1)]
+        if not found.empty:
+            ids=found['id'].astype(int).tolist()
+            labels={int(r['id']):f"PROGR {r['progressivo'] or '-'} · {r['indirizzo']} · {r['cliente']} · {r['tecnico_assegnato']}" for _,r in found.iterrows()}
+            selected_plant=st.selectbox('Seleziona impianto',ids,format_func=lambda i:labels[i],index=None,placeholder='Scegli un impianto')
+            if selected_plant is not None:
+                selected_row=plants[plants.id==selected_plant].iloc[0]
+                st.info(f"Stato attuale: {selected_row['stato_attuale']} · Nota originale: {clean(selected_row.get('note')) or 'Nessuna'}")
+                options=['ATTIVO','FERMO','SOSPESO','DISDETTO','CHIUSO']
+                new_status=st.selectbox('Nuovo stato',options,index=options.index(selected_row['stato_attuale']),key=f'status_{selected_plant}')
+                reason=st.text_input('Motivo o nota amministrativa',key=f'reason_{selected_plant}')
+                if st.button('SALVA STATO IMPIANTO',disabled=new_status==selected_row['stato_attuale']):
+                    save_plant_status(selected_plant,new_status,reason)
+                    st.success('Stato aggiornato.'); st.rerun()
+    st.divider()
     if p.empty:
         st.info('Carica prima l’Excel per visualizzare la dashboard.')
         st.stop()
     st.subheader('📊 Dashboard Amministratore')
     month_num=st.selectbox('Periodo',range(1,13),index=now.month-1,format_func=lambda x:MESI[x-1][1])
-    pm=p[p.mese_competenza==month_num].copy(); overdue=p[(p.stato_ui=='SCADUTA') & (p.mese_competenza<month_num if year==now.year else True)]
+    pm=p[(p.mese_competenza==month_num)&(p.stato_ui.isin(['DA FARE','SCADUTA','ESEGUITA']))].copy(); overdue=p[(p.stato_ui=='SCADUTA') & (p.mese_competenza<month_num if year==now.year else True)]
     total=len(pm); done=(pm.stato_ui=='ESEGUITA').sum(); todo=(pm.stato_ui=='DA FARE').sum(); sem=int(pm.semestrale.fillna(False).astype(bool).sum())
     a,b,c,d,e=st.columns(5); a.metric('Programmate',total); b.metric('🟢 Eseguite',done); c.metric('🟠 Da fare',todo); d.metric('🔴 Scadute precedenti',len(overdue)); e.metric('Semestrali eseguite',sem)
     if total: st.progress(done/total,text=f'Avanzamento {done/total*100:.1f}%')
+    st.markdown('### 📅 Scadenze biennali')
+    # Scadenze da tutti gli anni, non soltanto dall'anno selezionato.
+    biennali_jobs = pd.DataFrame(all_rows('manutenzioni','impianto_id,stato,biennale,scadenza_biennale'))
+    biennali = biennali_jobs[(biennali_jobs['stato']=='ESEGUITA') & (biennali_jobs['biennale'].fillna(False).astype(bool)) & biennali_jobs['scadenza_biennale'].notna()].copy()
+    if not biennali.empty:
+        imps_b = pd.DataFrame(all_rows('impianti','id,progressivo,cliente,indirizzo,tecnico_assegnato'))
+        biennali = biennali.merge(imps_b,left_on='impianto_id',right_on='id',how='left').rename(columns={'tecnico_assegnato':'assegnato'})
+    if biennali.empty:
+        st.info('Nessuna manutenzione biennale registrata.')
+    else:
+        # Una sola scadenza per impianto: la biennale eseguita più di recente.
+        biennali['scad_dt'] = pd.to_datetime(biennali['scadenza_biennale'], errors='coerce')
+        biennali = biennali.sort_values('scad_dt').drop_duplicates('impianto_id', keep='last')
+        biennali['situazione'] = biennali['scad_dt'].apply(lambda d: 'SCADUTA' if pd.notna(d) and d.date() < date.today() else ('ENTRO 60 GIORNI' if pd.notna(d) and d.date() <= date.today() + relativedelta(days=60) else 'PROGRAMMATA'))
+        st.dataframe(biennali[['progressivo','cliente','indirizzo','assegnato','scadenza_biennale','situazione']].rename(columns={'progressivo':'Progressivo','cliente':'Cliente','indirizzo':'Indirizzo','assegnato':'Tecnico','scadenza_biennale':'Scadenza biennale','situazione':'Situazione'}), hide_index=True,use_container_width=True)
     st.markdown('### Andamento per tecnico assegnatario')
     rows=[]
     for t,g in pm.groupby('assegnato',dropna=False):
@@ -270,8 +376,8 @@ if area=='📊 Amministratore':
         st.info('Nessuna manutenzione eseguita corrispondente alla ricerca.')
     else:
         completed = completed.sort_values('eseguita_il',ascending=False,na_position='last')
-        display = completed[['codice','indirizzo','cliente','mese_nome','anno_competenza','tecnico_esecutore','eseguita_il','semestrale','note']].copy()
-        display.columns=['Codice','Indirizzo','Cliente','Mese','Anno','Tecnico esecutore','Data esecuzione','Semestrale','Note']
+        display = completed[['codice','indirizzo','cliente','mese_nome','anno_competenza','tecnico_esecutore','eseguita_il','semestrale','biennale','scadenza_biennale','note']].copy()
+        display.columns=['Codice','Indirizzo','Cliente','Mese','Anno','Tecnico esecutore','Data esecuzione','Semestrale','Biennale','Scadenza biennale','Note']
         st.dataframe(display.fillna(''),hide_index=True,use_container_width=True)
         st.markdown('#### ↩ Annullamento di una manutenzione errata')
         choices = {int(r['id']): f"{r['codice']} · {r['indirizzo']} · {r['mese_nome']} {r['anno_competenza']} · {r['eseguita_il']}" for _,r in completed.iterrows()}
@@ -305,39 +411,54 @@ else:
     techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
     cristian_idx = 0
     tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
-    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
+    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
     if tech!='TUTTI': f=f[f.assegnato==tech]
     if stato!='TUTTI': f=f[f.stato_ui==stato]
     if mese!='TUTTI': f=f[f.mese_nome==mese]
-    c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',len(f)); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
-    if len(f): st.progress(float((f.stato_ui=='ESEGUITA').sum()/len(f)),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/len(f))*100:.1f}%")
+    c1,c2,c3,c4=st.columns(4); c1.metric('Programmate',int(f.stato_ui.isin(['DA FARE','SCADUTA','ESEGUITA']).sum())); c2.metric('🟢 Eseguite',(f.stato_ui=='ESEGUITA').sum()); c3.metric('🟠 Da fare',(f.stato_ui=='DA FARE').sum()); c4.metric('🔴 Scadute',(f.stato_ui=='SCADUTA').sum())
+    if f.stato_ui.isin(['DA FARE','SCADUTA','ESEGUITA']).sum():
+        active_count=int(f.stato_ui.isin(['DA FARE','SCADUTA','ESEGUITA']).sum())
+        st.progress(float((f.stato_ui=='ESEGUITA').sum()/active_count),text=f"Avanzamento {((f.stato_ui=='ESEGUITA').sum()/active_count)*100:.1f}%")
     st.subheader('Manutenzioni')
     st.caption('🔴 Le manutenzioni scadute restano evidenziate finché non vengono registrate.')
-    q=st.text_input('🔎 Cerca codice, matricola, cliente, indirizzo o comune')
-    if q: f=f[f[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
+    q=st.text_input('🔎 Cerca progressivo, codice, matricola, cliente, indirizzo o comune')
+    if q: f=f[f[['progressivo','codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str).apply(lambda x:x.str.contains(q,case=False,regex=False)).any(axis=1)]
     if 'selected_job' in st.session_state:
         rr=p[p['id']==st.session_state.selected_job]
-        if not rr.empty:
+        if not rr.empty and rr.iloc[0]['stato_ui'] in ('DA FARE','SCADUTA'):
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
                 cc1,cc2=st.columns(2); ops=operators(); default=ops.index(r['assegnato']) if r['assegnato'] in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
-                sem=st.checkbox('Semestrale eseguita'); nota=st.text_area('Note (facoltative)')
+                sem=st.checkbox('Semestrale eseguita'); biennale=st.checkbox('Biennale eseguita'); nota=st.text_area('Note (facoltative)')
+                if biennale: st.info(f'Prossima scadenza biennale: {(data_exec + relativedelta(months=24)).strftime("%d/%m/%Y")}')
                 b1,b2=st.columns([3,1])
-                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True): close_job(r['id'],oper,data_exec,sem,nota); del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
+                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True):
+                    try:
+                        close_job(r['id'],oper,data_exec,sem,biennale,nota)
+                    except Exception as exc: st.error(str(exc))
+                    else:
+                        del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
-        order={'SCADUTA':0,'DA FARE':1,'ESEGUITA':2}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
+        order={'SCADUTA':0,'DA FARE':1,'DA NON FARE':2,'NON AVVIATA':3,'ESEGUITA':4}; f=f.assign(ord=f.stato_ui.map(order)).sort_values(['ord','mese_competenza','comune','indirizzo'])
         page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
         for _,r in f.iloc[start:start+page_size].iterrows():
             with st.container(border=True):
-                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui=='SCADUTA' else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
-                if r.stato_ui!='ESEGUITA':
-                    if c.button('🟢 REGISTRA MANUTENZIONE',key='do_'+str(r['id']),use_container_width=True,type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
+                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui in ('SCADUTA','DA NON FARE') else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · PROGR. {r['progressivo'] if pd.notna(r['progressivo']) else '-'} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
+                if r.stato_ui in ('DA FARE','SCADUTA'):
+                    with c.container(key='registration_button'):
+                        if st.button('REGISTRA MANUTENZIONE',key='do_'+str(r['id']),use_container_width=True,type='primary'): st.session_state.selected_job=int(r['id']); st.rerun()
+                elif r.stato_ui=='DA NON FARE':
+                    c.button('DA NON FARE',key='blocked_'+str(r['id']),disabled=True,use_container_width=True,type='primary')
+                    c.caption(f"{r['stato_impianto']} · {clean(r.get('note_impianto'))[:120]}")
+                elif r.stato_ui=='NON AVVIATA':
+                    c.caption('Prima della data di avvio')
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
                     if bool(r.semestrale): c.caption('☑ Semestrale')
+                    if bool(r.biennale): c.caption(f'☑ Biennale · Prossima: {r.scadenza_biennale}')
 
 st.caption('TESYX Manutenzioni v2 · Archivio separato · Dati condivisi online su Supabase.')
