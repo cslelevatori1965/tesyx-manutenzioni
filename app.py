@@ -4,6 +4,7 @@ from datetime import datetime, date
 from supabase import create_client
 
 st.set_page_config(page_title="TESYX Manutenzioni", page_icon="🛠️", layout="wide")
+
 st.markdown("""
 <style>
 @media (max-width: 700px) {
@@ -14,8 +15,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile',4),('mag','Maggio',5),('giu','Giugno',6),('lug','Luglio',7),('ago','Agosto',8),('sett','Settembre',9),('ott','Ottobre',10),('nov','Novembre',11),('dic','Dicembre',12)]
-XLS='impianti.xlsx'
+MESI = [
+    ('Gen', 'Gennaio', 1), ('feb', 'Febbraio', 2), ('mar', 'Marzo', 3),
+    ('apr', 'Aprile', 4), ('mag', 'Maggio', 5), ('giu', 'Giugno', 6),
+    ('lug', 'Luglio', 7), ('ago', 'Agosto', 8), ('sett', 'Settembre', 9),
+    ('ott', 'Ottobre', 10), ('nov', 'Novembre', 11), ('dic', 'Dicembre', 12)
+]
+XLS = 'impianti.xlsx'
 
 @st.cache_resource
 def db():
@@ -27,7 +33,10 @@ def db():
 
 @st.cache_data
 def source():
-    d = pd.read_excel(XLS, sheet_name='Foglio1')
+    try:
+        d = pd.read_excel(XLS, sheet_name='Foglio1')
+    except Exception:
+        return pd.DataFrame()
     d = d[d[['numimp', 'matrimp', 'ragsoc', 'ubivia']].notna().any(axis=1)].copy()
     d['codice'] = d['numimp'].fillna('').astype(str).str.strip()
     d.loc[d['codice'].eq(''), 'codice'] = 'MATR-' + d['matrimp'].fillna('').astype(str).str.strip()
@@ -35,24 +44,20 @@ def source():
     return d
 
 def all_rows(table, cols='*'):
-    s = db()
-    rows = []
-    start = 0
-    step = 1000
+    s = db(); rows = []; start = 0; step = 1000
     while True:
         r = s.table(table).select(cols).range(start, start + step - 1).execute().data
         rows.extend(r)
-        if len(r) < step:
-            break
+        if len(r) < step: break
         start += step
     return rows
 
 def seed_if_needed():
     s = db()
     n = s.table('impianti').select('id', count='exact').limit(1).execute().count or 0
-    if n:
-        return
+    if n: return
     d = source()
+    if d.empty: return
     rec = []
     for _, r in d.iterrows():
         rec.append({
@@ -64,28 +69,21 @@ def seed_if_needed():
             'provincia': None if pd.isna(r.ubiprov) else str(r.ubiprov),
             'tecnico_assegnato': str(r.Manutentore)
         })
-    uniq = {x['codice']: x for x in rec}
-    vals = list(uniq.values())
-    for i in range(0, len(vals), 200):
-        s.table('impianti').insert(vals[i:i+200]).execute()
-    
+    uniq = {x['codice']: x for x in rec}; vals = list(uniq.values())
+    for i in range(0, len(vals), 200): s.table('impianti').insert(vals[i:i+200]).execute()
     imps = {x['codice']: x['id'] for x in all_rows('impianti', 'id,codice')}
     pro = []
     for _, r in d.drop_duplicates('codice').iterrows():
-        if r.codice not in imps:
-            continue
+        if r.codice not in imps: continue
         x = {'impianto_id': imps[r.codice], 'anno': 2026}
-        for col, nome, num in MESI:
-            x[nome.lower()] = str(r.get(col, '')).strip().upper() == 'S'
+        for col, nome, num in MESI: x[nome.lower()] = str(r.get(col, '')).strip().upper() == 'S'
         pro.append(x)
-    for i in range(0, len(pro), 200):
-        s.table('programmazione').insert(pro[i:i+200]).execute()
+    for i in range(0, len(pro), 200): s.table('programmazione').insert(pro[i:i+200]).execute()
 
 def ensure_jobs(year):
     s = db()
     imps = pd.DataFrame(all_rows('impianti', 'id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
-    if imps.empty:
-        return
+    if imps.empty: return
     prs = pd.DataFrame(all_rows('programmazione', '*'))
     if year not in set(prs.get('anno', pd.Series(dtype=int)).tolist()):
         base = prs[prs.anno == 2026].copy()
@@ -93,13 +91,10 @@ def ensure_jobs(year):
             vals = []
             for _, r in base.iterrows():
                 x = {'impianto_id': int(r.impianto_id), 'anno': year}
-                for _, nome, _ in MESI:
-                    x[nome.lower()] = bool(r[nome.lower()])
+                for _, nome, _ in MESI: x[nome.lower()] = bool(r[nome.lower()])
                 vals.append(x)
-            for i in range(0, len(vals), 200):
-                s.table('programmazione').insert(vals[i:i+200]).execute()
+            for i in range(0, len(vals), 200): s.table('programmazione').insert(vals[i:i+200]).execute()
             prs = pd.DataFrame(all_rows('programmazione', '*'))
-            
     existing = {(x['impianto_id'], x['anno_competenza'], x['mese_competenza']) for x in all_rows('manutenzioni', 'impianto_id,anno_competenza,mese_competenza')}
     vals = []
     for _, r in prs[prs.anno == year].iterrows():
@@ -114,15 +109,13 @@ def ensure_jobs(year):
                     'tecnico_assegnato': tech,
                     'stato': 'DA_FARE'
                 })
-    for i in range(0, len(vals), 200):
-        s.table('manutenzioni').insert(vals[i:i+200]).execute()
+    for i in range(0, len(vals), 200): s.table('manutenzioni').insert(vals[i:i+200]).execute()
 
 @st.cache_data(ttl=15)
 def dataset(year):
     jobs = pd.DataFrame(all_rows('manutenzioni', 'id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,note'))
     imps = pd.DataFrame(all_rows('impianti', 'id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato'))
-    if jobs.empty or imps.empty:
-        return pd.DataFrame()
+    if jobs.empty or imps.empty: return pd.DataFrame()
     p = jobs[jobs.anno_competenza == year].merge(imps, left_on='impianto_id', right_on='id', suffixes=('', '_imp'))
     p['mese_nome'] = p.mese_competenza.map({n: nome for _, nome, n in MESI})
     now = datetime.now()
@@ -132,19 +125,29 @@ def dataset(year):
     return p
 
 def operators():
-    x = all_rows('tecnici', 'nome,attivo')
-    return sorted([r['nome'] for r in x if r.get('attivo', True)])
+    try:
+        x = all_rows('tecnici', 'nome,attivo')
+        ops = sorted([r['nome'] for r in x if r.get('attivo', True)])
+        if ops: return ops
+    except Exception:
+        pass
+    return ['Cristian Malfatti']
 
 def close_job(job_id, oper, dt, sem, note):
-    ts = datetime.combine(dt, datetime.now().time()).astimezone().isoformat()
-    db().table('manutenzioni').update({
-        'stato': 'ESEGUITA',
-        'tecnico_esecutore': oper,
-        'eseguita_il': ts,
-        'semestrale': bool(sem),
-        'note': note
-    }).eq('id', int(job_id)).execute()
-    dataset.clear()
+    try:
+        ts = datetime.combine(dt, datetime.now().time()).astimezone().isoformat()
+        db().table('manutenzioni').update({
+            'stato': 'ESEGUITA',
+            'tecnico_esecutore': oper,
+            'eseguita_il': ts,
+            'semestrale': bool(sem),
+            'note': note
+        }).eq('id', int(job_id)).execute()
+        dataset.clear()
+        return True
+    except Exception as e:
+        st.error(f"Errore durante il salvataggio: {e}")
+        return False
 
 try:
     seed_if_needed()
@@ -156,7 +159,6 @@ except Exception as e:
 st.title('🛠️ TESYX · Gestione Manutenzioni')
 area = st.sidebar.radio('Area', ['👷 Tecnico', '📊 Amministratore'], index=0)
 year = st.sidebar.selectbox('Anno', [2026, 2027], index=0)
-
 ensure_jobs(year)
 p = dataset(year)
 now = datetime.now()
@@ -221,6 +223,7 @@ else:
     f = p.copy()
     if tech != 'TUTTI':
         f = f[f.assegnato == tech]
+    colonne_stato = ['TUTTI', 'SCADUTA', 'DA FARE', 'ESEGUITA']
     if stato != 'TUTTI':
         f = f[f.stato_ui == stato]
     if mese != 'TUTTI':
@@ -243,7 +246,7 @@ else:
         f = f[f[['codice', 'matricola', 'cliente', 'indirizzo', 'comune']].fillna('').astype(str).apply(lambda x: x.str.contains(q, case=False, regex=False)).any(axis=1)]
         
     if 'selected_job' in st.session_state:
-        rr = p[p.id_x == st.session_state.selected_job]
+        rr = p[p.id == st.session_state.selected_job]
         if not rr.empty:
             r = rr.iloc[0]
             with st.container(border=True):
@@ -251,60 +254,49 @@ else:
                 st.write(f"**{r['cliente']}** · {r['comune']}")
                 st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
                 
-                if pd.notna(r.get('note')) and str(r.get('note')).strip():
-                    st.info(f"📝 **Note precedenti:** {r['note']}")
-                    
                 cc1, cc2 = st.columns(2)
                 ops = operators()
                 default = ops.index('Cristian Malfatti') if 'Cristian Malfatti' in ops else 0
                 oper = cc1.selectbox('Tecnico che ha eseguito', ops, index=default)
                 data_exec = cc2.date_input('Data esecuzione', value=date.today())
-                
                 sem = st.checkbox('Semestrale eseguita')
-                nota = st.text_area('Note intervento (facoltative)')
+                nota = st.text_area('Note (facoltative)')
                 
                 b1, b2 = st.columns([3, 1])
-                with b1:
-                    if st.button('CONFERMA MANUTENZIONE', type='primary', use_container_width=True):
-                        close_job(r.id_x, oper, data_exec, sem, nota)
+                if b1.button('CONFERMA MANUTENZIONE', type='primary', use_container_width=True):
+                    if close_job(r.id, oper, data_exec, sem, nota):
                         del st.session_state.selected_job
-                        st.success('Manutenzione registrata con successo!')
+                        st.success('Manutenzione registrata.')
                         st.rerun()
-                with b2:
-                    if st.button('Annulla', use_container_width=True):
-                        del st.session_state.selected_job
-                        st.rerun()
-                        
+                if b2.button('Annulla', use_container_width=True):
+                    del st.session_state.selected_job
+                    st.rerun()
+                    
     if f.empty:
         st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
         order = {'SCADUTA': 0, 'DA FARE': 1, 'ESEGUITA': 2}
         f = f.assign(ord=f.stato_ui.map(order)).sort_values(['ord', 'mese_competenza', 'comune', 'indirizzo'])
-        
         page_size = 25
         pages = max(1, (len(f) + page_size - 1) // page_size)
         page = st.number_input('Pagina', 1, pages, 1, 1) if pages > 1 else 1
         start = (int(page) - 1) * page_size
         
-        for _, r in f.iloc[start:start+page_size].iterrows():
+        for _, r in f.iloc[start:start + page_size].iterrows():
             with st.container(border=True):
                 a, b, c = st.columns([6, 2, 2])
                 icon = '🔴' if r.stato_ui == 'SCADUTA' else ('🟢' if r.stato_ui == 'ESEGUITA' else '🟠')
-                
                 a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**")
                 a.caption(f"{r['cliente']} · Cod. {r['codice']} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}")
-                
                 b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**")
                 b.write(r.stato_ui)
                 
                 if r.stato_ui != 'ESEGUITA':
-                    if c.button('REGISTRA', key='do_'+str(r.id_x), use_container_width=True, type='primary'):
-                        st.session_state.selected_job = int(r.id_x)
+                    if c.button('REGISTRA MANUTENZIONE', key='do_' + str(r.id), use_container_width=True, type='primary'):
+                        st.session_state.selected_job = int(r.id)
                         st.rerun()
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita'))
-                    c.caption(str(r.eseguita_il or ''))
+                    c.caption(str(r.eseguita_il or '`'))
                     if bool(r.semestrale):
                         c.caption('☑ Semestrale')
-
-st.caption('Versione CRISTIAN TEST v2 (Ottimizzata) · Dati condivisi online su Supabase')
