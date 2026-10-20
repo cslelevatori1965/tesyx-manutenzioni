@@ -112,17 +112,33 @@ def import_new_archive(df):
     for i in range(0,len(jobs),150): client.table('manutenzioni_v2').insert(jobs[i:i+150]).execute()
     names=sorted(set(r['tecnico_assegnato'] for r in records if r['tecnico_assegnato']!='Non assegnato'))
     for name in names: client.table('tecnici_v2').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
-    dataset.clear()
+    invalidate_data()
     return len(records),len(jobs),len(names)
 
-def all_rows(table, cols='*'):
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_rows(table_name, cols='*', filters=()):
+    # Cache letture; non memorizza credenziali o connessioni.
+    return fetch_rows(table_name, cols, filters)
+
+def fetch_rows(table_name, cols='*', filters=()):
     s=db(); rows=[]; start=0; step=1000
     while True:
-        r=s.table(globals()["table"](table)).select(cols).range(start,start+step-1).execute().data
+        query=s.table(globals()['table'](table_name)).select(cols)
+        for column, value in filters:
+            query=query.eq(column, value)
+        r=query.range(start,start+step-1).execute().data
         rows.extend(r)
         if len(r)<step: break
         start+=step
     return rows
+
+def all_rows(table, cols='*'):
+    return cached_rows(table, cols)
+
+def invalidate_data():
+    cached_rows.clear()
+    get_status_overrides.clear()
+    dataset.clear()
 
 def seed_if_needed():
     # La nuova base dati viene caricata esclusivamente da Amministratore.
@@ -155,7 +171,7 @@ def ensure_jobs(year):
 
 @st.cache_data(ttl=15)
 def dataset(year):
-    jobs=pd.DataFrame(all_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,biennale,scadenza_biennale,note'))
+    jobs=pd.DataFrame(cached_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,biennale,scadenza_biennale,note',(('anno_competenza',year),)))
     imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato,progressivo,note'))
     if jobs.empty or imps.empty: return pd.DataFrame()
     p=jobs[jobs.anno_competenza==year].merge(imps,left_on='impianto_id',right_on='id',suffixes=('','_imp'))
@@ -169,6 +185,7 @@ def dataset(year):
 # modifica ai 2.351 impianti, alle programmazioni o allo storico esistente.
 STATUS_TABLE = 'stati_impianti_v2'
 
+@st.cache_data(ttl=45, show_spinner=False)
 def get_status_overrides():
     return {int(x['impianto_id']): x for x in all_rows(STATUS_TABLE, '*')}
 
@@ -224,7 +241,7 @@ def save_plant_status(plant_id, status, reason):
                'motivo':reason.strip() or None,
                'data_riattivazione': today if status=='ATTIVO' and (not old or old['stato']!='ATTIVO') else (old.get('data_riattivazione') if old else None)}
     db().table(STATUS_TABLE).upsert(payload,on_conflict='impianto_id').execute()
-    dataset.clear()
+    invalidate_data()
 
 
 def street_sort_parts(address):
@@ -260,7 +277,7 @@ def close_job(job_id, oper, dt, sem, biennale, note):
     ts=datetime.combine(dt,datetime.now().time()).astimezone().isoformat()
     scadenza = (dt + relativedelta(months=24)).isoformat() if biennale else None
     db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).execute()
-    dataset.clear()
+    invalidate_data()
 
 def cancel_job(job_id, reason):
     # Conserva una copia completa PRIMA di modificare il record.
@@ -280,7 +297,7 @@ def cancel_job(job_id, reason):
         'stato':'DA_FARE', 'tecnico_esecutore':None,
         'eseguita_il':None, 'semestrale':False, 'biennale':False, 'scadenza_biennale':None, 'note':None
     }).eq('id',int(job_id)).eq('stato','ESEGUITA').execute()
-    dataset.clear()
+    invalidate_data()
 
 try:
     seed_if_needed()
@@ -337,7 +354,11 @@ def geographic_order(frame, coordinates):
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
-ensure_jobs(year); p=dataset(year); now=datetime.now()
+if year not in st.session_state.get('_ensured_years', set()):
+    ensure_jobs(year)
+    st.session_state.setdefault('_ensured_years', set()).add(year)
+    invalidate_data()
+p=dataset(year); now=datetime.now()
 if p.empty and area!='📊 Amministratore': st.warning('Nessuna manutenzione disponibile. Chiedi all’amministratore di importare il file Excel.'); st.stop()
 
 if area=='📊 Amministratore':
