@@ -626,6 +626,31 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
+    st.subheader('🧪 Anteprima nuovo archivio Excel (senza scrivere su Supabase)')
+    st.caption('Legge il Foglio1 del file definitivo per gestionale.xlsx. Non importa, cancella o aggiorna alcun dato.')
+    preview_upload = st.file_uploader('Seleziona definitivo per gestionale.xlsx', type=['xlsx'], key='new_archive_preview')
+    if preview_upload is not None:
+        try:
+            raw = pd.read_excel(preview_upload, sheet_name='Foglio1', header=2, dtype=str).fillna('')
+            raw.columns = [str(x).replace('\n',' ').strip().upper() for x in raw.columns]
+            needed = ['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
+            missing = [x for x in needed if x not in raw.columns]
+            if missing:
+                st.error('Intestazioni non riconosciute: ' + ', '.join(missing))
+            else:
+                raw = raw[(raw['RAG. SOCIALE'].str.strip() != '') | (raw['UBICAZIONE'].str.strip() != '')].copy()
+                raw['TIPO MANUT.'] = raw['TIPO MANUT.'].str.strip().str.upper()
+                raw['MESI RICONOSCIUTI'] = raw['TIPO MANUT.'].map(lambda x: months_for_cadence(x))
+                raw['VERIFICA'] = raw.apply(lambda r: 'DA DEFINIRE' if not r['TIPO MANUT.'] else ('TIPO NON STANDARD' if r['MESI RICONOSCIUTI'] is None else 'AUTOMATICA'), axis=1)
+                st.write(f"Impianti letti: **{len(raw)}** · Cadenze mancanti: **{int((raw['VERIFICA']=='DA DEFINIRE').sum())}** · Tipi non standard: **{int((raw['VERIFICA']=='TIPO NON STANDARD').sum())}**")
+                st.dataframe(raw['TIPO MANUT.'].value_counts(dropna=False).rename_axis('Tipo').reset_index(name='Impianti'), hide_index=True)
+                uncertain = raw[raw['VERIFICA']!='AUTOMATICA']
+                st.markdown('**Impianti da programmare manualmente**')
+                st.dataframe(uncertain[['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','UBICAZIONE','TIPO MANUT.','MANUTENTORE','VERIFICA']], hide_index=True, use_container_width=True)
+                st.info('Anteprima completata: nessun dato è stato scritto su Supabase. Le cadenze manuali si potranno salvare nel gestionale dopo la verifica e la migrazione controllata.')
+        except Exception as exc:
+            st.error('Impossibile leggere il nuovo Excel: ' + str(exc))
+    st.divider()
     st.subheader('📥 Importazione archivio impianti')
     count=db().table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
     st.write(f'Impianti presenti nel nuovo archivio: **{count}**')
