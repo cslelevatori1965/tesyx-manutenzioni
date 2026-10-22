@@ -539,7 +539,7 @@ def geographic_order(frame, coordinates):
 
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
-year=st.sidebar.selectbox('Anno',[2027,2026],index=0)
+year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 if year not in st.session_state.get('_ensured_years', set()):
     # ensure_jobs(year)
     st.session_state.setdefault('_ensured_years', set()).add(year)
