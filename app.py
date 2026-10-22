@@ -8,6 +8,7 @@ import json
 import time
 import math
 import io
+import zipfile
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from supabase import create_client
@@ -650,6 +651,41 @@ if area=='📊 Amministratore':
                 st.info('Anteprima completata: nessun dato è stato scritto su Supabase. Le cadenze manuali si potranno salvare nel gestionale dopo la verifica e la migrazione controllata.')
         except Exception as exc:
             st.error('Impossibile leggere il nuovo Excel: ' + str(exc))
+    st.divider()
+    st.subheader('💾 Backup di sicurezza prima della sostituzione')
+    st.caption('Scarica una copia completa delle tabelle del gestionale prima di qualsiasi modifica. Il backup non scrive su Supabase.')
+    if st.button('Prepara backup completo Supabase', key='backup_official_archive'):
+        try:
+            backup_tables=['impianti_v2','programmazione_v2','manutenzioni_v2',
+                           'tecnici_v2','stati_impianti_v2','storico_annullamenti_v2',
+                           'storico_programmazione_v2']
+            buffer=io.BytesIO()
+            counts={}; errors={}
+            with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as archive:
+                for table_name in backup_tables:
+                    try:
+                        records=fetch_rows(table_name,'*')
+                        counts[table_name]=len(records)
+                        archive.writestr(table_name+'.json',json.dumps(records,ensure_ascii=False,default=str,indent=2))
+                    except Exception as exc:
+                        errors[table_name]=str(exc)
+                manifest={'created_at':datetime.now().isoformat(), 'counts':counts, 'errors':errors,
+                          'warning':'Backup per consultazione; non ripristinare automaticamente senza verifica dei vincoli.'}
+                archive.writestr('MANIFEST.json',json.dumps(manifest,ensure_ascii=False,indent=2))
+            st.session_state['archive_backup_bytes']=buffer.getvalue()
+            st.session_state['archive_backup_manifest']=manifest
+        except Exception as exc:
+            st.error('Backup non riuscito: '+str(exc))
+    if st.session_state.get('archive_backup_bytes'):
+        manifest=st.session_state['archive_backup_manifest']
+        if manifest['errors']:
+            st.error('Backup incompleto: '+', '.join(manifest['errors'])+'. Non procedere alla sostituzione.')
+        else:
+            st.success('Backup completo pronto. Scaricalo e conservalo sul computer.')
+        st.dataframe(pd.DataFrame([{'Tabella':k,'Righe':v} for k,v in manifest['counts'].items()]),hide_index=True)
+        st.download_button('⬇️ Scarica backup completo ZIP',data=st.session_state['archive_backup_bytes'],
+                           file_name='TESYX_backup_prima_sostituzione.zip',mime='application/zip',
+                           key='download_full_backup')
     st.divider()
     st.subheader('🧭 Preparazione sostituzione archivio ufficiale')
     st.caption('Confronto di sicurezza: il nuovo Excel prevale per assegnazioni e cadenze. Nessuna scrittura su Supabase in questa fase.')
