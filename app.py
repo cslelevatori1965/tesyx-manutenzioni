@@ -867,7 +867,7 @@ if area=='📊 Amministratore':
     st.divider()
     st.subheader('🚦 Stato impianti: fermo, sospeso e riattivazione')
     st.caption('Le NOTE originali non vengono modificate. La riattivazione ha effetto dal mese corrente, senza arretrati.')
-    plants = pd.DataFrame(all_rows('impianti','id,cliente,indirizzo,comune,progressivo,tecnico_assegnato,note'))
+    plants = pd.DataFrame(all_rows('impianti','id,codice,cliente,indirizzo,comune,progressivo,tecnico_assegnato,note'))
     if not plants.empty:
         status_map = get_status_overrides()
         plants['stato_attuale'] = plants.apply(lambda r:status_map.get(int(r['id']),{}).get('stato') or initial_status(r.get('note')),axis=1)
