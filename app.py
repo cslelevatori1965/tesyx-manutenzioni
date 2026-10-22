@@ -651,6 +651,54 @@ if area=='📊 Amministratore':
         except Exception as exc:
             st.error('Impossibile leggere il nuovo Excel: ' + str(exc))
     st.divider()
+    st.subheader('🧭 Preparazione sostituzione archivio ufficiale')
+    st.caption('Confronto di sicurezza: il nuovo Excel prevale per assegnazioni e cadenze. Nessuna scrittura su Supabase in questa fase.')
+    official_file=st.file_uploader('Carica definitivo per gestionale.xlsx per preparare la sostituzione',type=['xlsx'],key='official_replace_file')
+    if official_file is not None:
+        try:
+            source=pd.read_excel(official_file,sheet_name='Foglio1',header=2,dtype=str).fillna('')
+            source.columns=[str(c).replace('\n',' ').strip().upper() for c in source.columns]
+            required=['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
+            if any(c not in source.columns for c in required):
+                raise ValueError('Colonne mancanti: '+', '.join(c for c in required if c not in source.columns))
+            source=source[(source['RAG. SOCIALE'].str.strip()!='') | (source['UBICAZIONE'].str.strip()!='')].copy()
+            source['TIPO MANUT.']=source['TIPO MANUT.'].str.strip().str.upper()
+            source['MESI']=source['TIPO MANUT.'].map(months_for_cadence)
+            existing=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,indirizzo,comune,tecnico_assegnato,tipo_manutenzione')
+            def norm(value):
+                return re.sub(r'[^A-Z0-9]','',clean(value).upper())
+            def keys(record):
+                return (norm(record.get('matricola')),norm(record.get('numero_fabbrica')))
+            by_mat={};by_fab={}
+            for plant in existing:
+                mat,fab=keys(plant)
+                if mat:by_mat.setdefault(mat,[]).append(plant)
+                if fab:by_fab.setdefault(fab,[]).append(plant)
+            comparisons=[];seen={}
+            for _,r in source.iterrows():
+                mat=norm(r['NUMERO MATRICOLA']);fab=norm(r['NUMERO FABBRICA'])
+                a=by_mat.get(mat,[]) if mat else []
+                b=by_fab.get(fab,[]) if fab else []
+                candidates={v['id']:v for v in a+b}
+                both={v['id'] for v in a}&{v['id'] for v in b} if mat and fab else set()
+                if len(both)==1: candidate=candidates[next(iter(both))];status='CORRISPONDENZA CERTA'
+                elif len(candidates)==1 and (not a or not b):candidate=next(iter(candidates.values()));status='DA VERIFICARE - UN SOLO IDENTIFICATIVO'
+                elif not candidates:candidate=None;status='NUOVO / NON TROVATO'
+                else:candidate=None;status='AMBIGUO - NON ABBINARE'
+                if candidate:seen[candidate['id']]=seen.get(candidate['id'],0)+1
+                comparisons.append({'Codice cliente':clean(r['COD. CLIENTE']),'Cliente':clean(r['RAG. SOCIALE']),'Matricola':clean(r['NUMERO MATRICOLA']),'Numero fabbrica':clean(r['NUMERO FABBRICA']),'Comune':clean(r["CITTA'"]),'Indirizzo':clean(r['UBICAZIONE']),'Tecnico nuovo':clean(r['MANUTENTORE']),'Cadenza nuova':clean(r['TIPO MANUT.']),'Mesi previsti':','.join(map(str,r['MESI'])) if isinstance(r['MESI'],list) else '', 'ID vecchio proposto':candidate['id'] if candidate else '', 'Tecnico vecchio':candidate.get('tecnico_assegnato','') if candidate else '', 'Esito':status})
+            for item in comparisons:
+                iid=item['ID vecchio proposto']
+                if iid and seen[iid]>1:item['Esito']='AMBIGUO - PIÙ RIGHE SULLO STESSO ID'
+            result=pd.DataFrame(comparisons)
+            st.write('Nuovo archivio:',len(result),'impianti · Attuale Supabase:',len(existing),'impianti')
+            st.dataframe(result['Esito'].value_counts().rename_axis('Esito').reset_index(name='Impianti'),hide_index=True)
+            st.dataframe(result[result['Esito']!='CORRISPONDENZA CERTA'].head(100),hide_index=True,use_container_width=True)
+            st.download_button('⬇️ Scarica confronto completo CSV',data=result.to_csv(index=False,sep=';').encode('utf-8-sig'),file_name='confronto_archivio_ufficiale.csv',mime='text/csv')
+            st.warning('Sostituzione automatica NON attiva: prima occorre salvare un backup completo e collegare lo storico delle manutenzioni agli ID corretti. Gli abbinamenti dubbi non saranno applicati automaticamente.')
+        except Exception as exc:
+            st.error('Preparazione non completata: '+str(exc))
+    st.divider()
     st.subheader('📥 Importazione archivio impianti')
     count=db().table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
     st.write(f'Impianti presenti nel nuovo archivio: **{count}**')
