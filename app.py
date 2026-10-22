@@ -211,11 +211,20 @@ def fetch_rows(table_name, cols='*', filters=()):
         start+=step
     return rows
 
+@st.cache_data(ttl=20, show_spinner=False)
+def official_active():
+    rows=fetch_rows('impianti','id,codice,note',(('codice','OFF-2026-00001'),))
+    return bool(rows and '[ARCHIVIO_UFFICIALE_ATTIVO]' in (rows[0].get('note') or ''))
+
 def all_rows(table, cols='*'):
-    return cached_rows(table, cols)
+    rows=cached_rows(table, cols)
+    if table=='impianti' and official_active():
+        return [r for r in rows if str(r.get('codice','')).startswith('OFF-2026-')]
+    return rows
 
 def invalidate_data():
     cached_rows.clear()
+    official_active.clear()
     get_status_overrides.clear()
     dataset.clear()
 
@@ -538,6 +547,70 @@ def geographic_order(frame, coordinates):
     order = {job_id: index for index, key in enumerate(best + sorted(missing)) for job_id in groups[key]}
     return frame.assign(_giro=frame['id'].map(order)).sort_values('_giro', kind='stable').drop(columns=['_giro']), len(missing)
 
+def activate_official_archive(source):
+    """Importazione aggiuntiva, riprendibile. Nessun UPDATE/DELETE delle righe storiche.
+    Attivazione finale soltanto dopo controllo impianti, piani e manutenzioni.
+    """
+    client=db()
+    src=source.reset_index(drop=True)
+    if len(src)!=2399:
+        raise ValueError(f'Attesi 2399 impianti, trovati {len(src)}. Nessuna importazione.')
+    keys=['gen','feb','mar','apr','mag','giu','lug','ago','sett','ott','nov','dic']
+    records=[]; plans=[]; jobs=[]
+    for i,r in src.iterrows():
+        code='OFF-2026-'+str(i+1).zfill(5)
+        cadence=clean(r['TIPO MANUT.'])
+        months=months_for_cadence(cadence)
+        if months is None:
+            months=[] # cadenza da definire manualmente, mai dedotta
+        tech=clean(r['MANUTENTORE']) or 'Non assegnato'
+        records.append({'codice':code,'codice_cliente':clean(r['COD. CLIENTE']) or None,
+            'cliente':clean(r['RAG. SOCIALE']) or None,'matricola':clean(r['NUMERO MATRICOLA']) or None,
+            'numero_fabbrica':clean(r['NUMERO FABBRICA']) or None,
+            'comune':clean(r["CITTA'"]) or None,'indirizzo':clean(r['UBICAZIONE']) or None,
+            'provincia':clean(r['PROV.']) or None,'tipo_manutenzione':cadence or None,
+            'tecnico_assegnato':tech,'note':'ARCHIVIO UFFICIALE 2026 | CADENZA DA DEFINIRE' if not cadence else 'ARCHIVIO UFFICIALE 2026'})
+    current=fetch_rows('impianti','id,codice,note')
+    official={r['codice']:r for r in current if str(r.get('codice','')).startswith('OFF-2026-')}
+    allowed={r['codice'] for r in records}
+    if set(official)-allowed:
+        raise ValueError('Trovati codici ufficiali non previsti. Importazione bloccata.')
+    for i in range(0,len(records),100):
+        missing=[r for r in records[i:i+100] if r['codice'] not in official]
+        if missing:
+            client.table('impianti_v2').insert(missing).execute()
+    current=fetch_rows('impianti','id,codice,note')
+    official={r['codice']:r for r in current if str(r.get('codice','')).startswith('OFF-2026-')}
+    if len(official)!=2399: raise ValueError('Numero impianti ufficiali non completo: attivazione sospesa.')
+    for i,r in src.iterrows():
+        iid=official['OFF-2026-'+str(i+1).zfill(5)]['id']
+        months=months_for_cadence(clean(r['TIPO MANUT.'])) or []
+        tech=clean(r['MANUTENTORE']) or 'Non assegnato'
+        for year in (2026,2027):
+            plans.append({'impianto_id':iid,'anno':year,**{k:(n in months) if clean(r['TIPO MANUT.']) else None for n,k in enumerate(keys,1)}})
+            for m in months:
+                jobs.append({'impianto_id':iid,'anno_competenza':year,'mese_competenza':m,'tecnico_assegnato':tech,'stato':'DA_FARE'})
+    ids={v['id'] for v in official.values()}
+    oldplans={(r['impianto_id'],r['anno']) for r in fetch_rows('programmazione','impianto_id,anno') if r['impianto_id'] in ids}
+    for i in range(0,len(plans),100):
+        missing=[r for r in plans[i:i+100] if (r['impianto_id'],r['anno']) not in oldplans]
+        if missing:client.table('programmazione_v2').insert(missing).execute()
+    oldjobs={(r['impianto_id'],r['anno_competenza'],r['mese_competenza']) for r in fetch_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza') if r['impianto_id'] in ids}
+    for i in range(0,len(jobs),100):
+        missing=[r for r in jobs[i:i+100] if (r['impianto_id'],r['anno_competenza'],r['mese_competenza']) not in oldjobs]
+        if missing:client.table('manutenzioni_v2').insert(missing).execute()
+    allplans=fetch_rows('programmazione','impianto_id,anno')
+    alljobs=fetch_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza')
+    plan_keys={(r['impianto_id'],r['anno']) for r in allplans if r['impianto_id'] in ids}
+    job_keys={(r['impianto_id'],r['anno_competenza'],r['mese_competenza']) for r in alljobs if r['impianto_id'] in ids}
+    if not {(r['impianto_id'],r['anno']) for r in plans}.issubset(plan_keys) or not {(r['impianto_id'],r['anno_competenza'],r['mese_competenza']) for r in jobs}.issubset(job_keys):
+        raise ValueError('Verifica finale incompleta: vecchio archivio ancora operativo.')
+    # Il marcatore attiva l’archivio solo dopo il completamento di tutti i lotti.
+    first=official['OFF-2026-00001']
+    client.table('impianti_v2').update({'note':(first.get('note') or '')+' [ARCHIVIO_UFFICIALE_ATTIVO]'}).eq('id',first['id']).execute()
+    invalidate_data()
+    return {'impianti_ufficiali':len(official),'programmazioni_ufficiali':len(plans),'manutenzioni_da_fare_ufficiali':len(jobs),'vecchio_archivio':'conservato, non cancellato'}
+
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
@@ -731,7 +804,22 @@ if area=='📊 Amministratore':
             st.dataframe(result['Esito'].value_counts().rename_axis('Esito').reset_index(name='Impianti'),hide_index=True)
             st.dataframe(result[result['Esito']!='CORRISPONDENZA CERTA'].head(100),hide_index=True,use_container_width=True)
             st.download_button('⬇️ Scarica confronto completo CSV',data=result.to_csv(index=False,sep=';').encode('utf-8-sig'),file_name='confronto_archivio_ufficiale.csv',mime='text/csv')
-            st.warning('Sostituzione automatica NON attiva: prima occorre salvare un backup completo e collegare lo storico delle manutenzioni agli ID corretti. Gli abbinamenti dubbi non saranno applicati automaticamente.')
+            st.subheader('🚀 Attivazione archivio ufficiale (senza cancellare lo storico)')
+            st.info('Il vecchio archivio e tutti i collegamenti storici rimangono nel database. Si inserisce un archivio ufficiale separato; soltanto alla fine viene attivato per tecnici e amministratore.')
+            if official_active():
+                st.success('ARCHIVIO UFFICIALE GIÀ ATTIVO. Non ripetere l’importazione.')
+            else:
+                st.warning('Operazione reale su Supabase: prima di procedere conserva il backup ZIP già scaricato.')
+                confirm=st.checkbox('Confermo di aver conservato il backup ZIP e di voler attivare i 2.399 impianti ufficiali',key='confirm_real_migration')
+                if st.button('IMPORTA E ATTIVA ARCHIVIO UFFICIALE',disabled=not confirm,key='real_migration'):
+                    try:
+                        with st.spinner('Importazione reale in corso. Non chiudere la pagina.'):
+                            counts=activate_official_archive(source)
+                        st.success('Archivio ufficiale attivato. Ricarica la pagina per visualizzarlo.')
+                        st.json(counts)
+                    except Exception as ex:
+                        st.error('Importazione interrotta: '+str(ex))
+                        st.warning('Non ripetere senza controllo: l’archivio precedente resta operativo finché l’attivazione non è completata.')
         except Exception as exc:
             st.error('Preparazione non completata: '+str(exc))
     st.divider()
