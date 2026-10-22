@@ -865,6 +865,51 @@ if area=='📊 Amministratore':
             except Exception as exc:
                 st.error('Ripresa bloccata o incompleta: '+str(exc))
     st.divider()
+    st.subheader('👷 Assegnazione e cambio manutentore')
+    st.caption('Assegna gli impianti senza tecnico o cambia il manutentore principale. Le manutenzioni già eseguite e lo storico non vengono modificati.')
+    assign_plants = pd.DataFrame(all_rows('impianti','id,codice,cliente,matricola,indirizzo,comune,tecnico_assegnato'))
+    if not assign_plants.empty:
+        unassigned = assign_plants['tecnico_assegnato'].fillna('').astype(str).str.strip().isin(['','Non assegnato'])
+        st.caption(f'Impianti senza manutentore: {int(unassigned.sum())}')
+        only_unassigned = st.checkbox('Mostra solo impianti senza manutentore',key='assign_only_unassigned')
+        assign_search = st.text_input('Cerca per codice, matricola, cliente o indirizzo',key='assign_search')
+        choices = assign_plants[unassigned].copy() if only_unassigned else assign_plants.copy()
+        if assign_search.strip():
+            fields = choices[['codice','matricola','cliente','indirizzo','comune']].fillna('').astype(str)
+            choices = choices[fields.apply(lambda col:col.str.contains(assign_search.strip(),case=False,regex=False)).any(axis=1)]
+        if not choices.empty:
+            labels = {int(r['id']):f"{r['codice']} · {r['indirizzo']} · {r['cliente']} · {r['tecnico_assegnato'] or 'Non assegnato'}" for _,r in choices.iterrows()}
+            plant_id = st.selectbox('Impianto da assegnare',choices['id'].astype(int).tolist(),format_func=lambda x:labels[x],index=None,key='assign_plant_id')
+            if plant_id is not None:
+                selected = choices[choices['id']==plant_id].iloc[0]
+                previous = clean(selected['tecnico_assegnato']) or 'Non assegnato'
+                available = [name for name in operators() if clean(name) and clean(name)!='Non assegnato']
+                if not available:
+                    st.warning('Nessun tecnico attivo disponibile.')
+                else:
+                    with st.form(f'assign_tech_form_{plant_id}'):
+                        st.write(f'**Manutentore attuale:** {previous}')
+                        new_tech = st.selectbox('Nuovo manutentore',available,index=available.index(previous) if previous in available else 0)
+                        confirm_assignment = st.checkbox('Confermo la nuova assegnazione e lo spostamento nei giri')
+                        submitted = st.form_submit_button('SALVA ASSEGNAZIONE',type='primary')
+                    if submitted:
+                        if not confirm_assignment or new_tech==previous:
+                            st.warning('Seleziona un tecnico diverso e conferma la modifica.')
+                        else:
+                            try:
+                                # Aggiorna soltanto il tecnico principale: i giri leggono questa assegnazione.
+                                # Le manutenzioni eseguite conservano il loro tecnico esecutore e i dati storici.
+                                result = db().table('impianti_v2').update({'tecnico_assegnato':new_tech}).eq('id',int(plant_id)).eq('codice',str(selected['codice'])).execute()
+                                if not result.data:
+                                    raise ValueError('Nessun impianto aggiornato: verificare i permessi.')
+                                invalidate_data()
+                                st.success(f'Assegnazione aggiornata: {previous} → {new_tech}.')
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f'Assegnazione non salvata: {exc}')
+        else:
+            st.info('Nessun impianto trovato con questi filtri.')
+    st.divider()
     st.subheader('🚦 Stato impianti: fermo, sospeso e riattivazione')
     st.caption('Le NOTE originali non vengono modificate. La riattivazione ha effetto dal mese corrente, senza arretrati.')
     plants = pd.DataFrame(all_rows('impianti','id,codice,cliente,indirizzo,comune,progressivo,tecnico_assegnato,note'))
