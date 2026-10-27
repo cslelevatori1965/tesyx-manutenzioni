@@ -1164,7 +1164,28 @@ else:
                 st.info(f'Giro geografico calcolato. Indirizzi senza posizione certa: {missing}. Questi sono collocati alla fine del giro.')
             else:
                 st.info('Premi «Calcola giro geografico» per ottenere la sequenza per vicinanza.')
-        page_size=25; pages=max(1,(len(f)+page_size-1)//page_size); page=st.number_input('Pagina',1,pages,1,1) if pages>1 else 1; start=(int(page)-1)*page_size
+        # Navigazione leggibile: 50 visite per pagina come impostazione iniziale.
+        # La scelta 'Tutte' consente di visualizzare l'intero giro senza paginazione.
+        total_visits = len(f)
+        nav_left, nav_right = st.columns([2, 3])
+        with nav_left:
+            page_choice = st.selectbox('Manutenzioni da mostrare', ['50', '25', '100', 'Tutte'], key='visite_per_pagina')
+        page_size = total_visits if page_choice == 'Tutte' else int(page_choice)
+        page_size = max(1, page_size)
+        pages = max(1, (total_visits + page_size - 1) // page_size)
+        # La chiave include i filtri: cambiando ricerca o tecnico si riparte dalla pagina 1.
+        page_filter_key = hashlib.sha1(repr((year, tech, stato, mese, q, mode, page_choice)).encode('utf-8')).hexdigest()[:12]
+        with nav_right:
+            if pages > 1:
+                page = st.selectbox('Vai alla pagina', list(range(1, pages + 1)),
+                                    format_func=lambda n: f'Pagina {n} di {pages}',
+                                    key=f'visite_pagina_{page_filter_key}')
+            else:
+                page = 1
+                st.caption('Pagina 1 di 1')
+        start = (int(page) - 1) * page_size
+        end = min(start + page_size, total_visits)
+        st.info(f'Visualizzi le manutenzioni da {start + 1} a {end} di {total_visits}.' if total_visits else 'Nessuna manutenzione da visualizzare.')
         for _,r in f.iloc[start:start+page_size].iterrows():
             with st.container(border=True):
                 a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui in ('SCADUTA','DA NON FARE') else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · PROGR. {r['progressivo'] if pd.notna(r['progressivo']) else '-'} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
