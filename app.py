@@ -611,6 +611,12 @@ def activate_official_archive(source):
     invalidate_data()
     return {'impianti_ufficiali':len(official),'programmazioni_ufficiali':len(plans),'manutenzioni_da_fare_ufficiali':len(jobs),'vecchio_archivio':'conservato, non cancellato'}
 
+def make_audit_excel(frame):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        frame.to_excel(writer, index=False, sheet_name='Controllo')
+    return buffer.getvalue()
+
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
@@ -648,6 +654,69 @@ if area=='📊 Amministratore':
     plan_rows = pd.DataFrame(all_rows('programmazione', '*'))
     plant_rows = pd.DataFrame(all_rows('impianti', 'id,codice,codice_cliente,cliente,matricola,numero_fabbrica,comune,indirizzo,provincia,tecnico_assegnato,tipo_manutenzione,progressivo,note'))
     month_cols = [name.lower() for name,_,_ in MESI]
+    st.subheader('🔍 Controllo visite mancanti e cadenze')
+    st.caption('Controllo in sola lettura: non crea, elimina o modifica manutenzioni. Le differenze possono essere eccezioni manuali e richiedono conferma.')
+    audit_techs = sorted(plant_rows['tecnico_assegnato'].dropna().astype(str).unique().tolist()) if not plant_rows.empty else []
+    default_tech = next((t for t in audit_techs if 'CRISTIAN' in t.upper() and 'MALFATTI' in t.upper()), None)
+    audit_tech = st.selectbox('Tecnico da verificare', ['Tutti'] + audit_techs,
+                              index=(audit_techs.index(default_tech)+1 if default_tech else 0), key='audit_tech')
+    audit_month = st.selectbox('Mese da verificare', list(range(1,13)), index=9,
+                               format_func=lambda m: MESI[m-1][1], key='audit_month')
+    if st.button('VERIFICA VISITE E CADENZE', key='audit_run'):
+        if plant_rows.empty:
+            st.warning('Nessun impianto disponibile.')
+        else:
+            selected_plants = plant_rows if audit_tech == 'Tutti' else plant_rows[plant_rows['tecnico_assegnato'] == audit_tech]
+            year_plans = plan_rows[plan_rows['anno'].astype(int) == year] if not plan_rows.empty else pd.DataFrame()
+            by_plant = {}
+            for _, plan in year_plans.iterrows():
+                by_plant.setdefault(int(plan['impianto_id']), []).append(plan)
+            year_jobs = fetch_rows('manutenzioni', 'impianto_id,mese_competenza,stato', (('anno_competenza',int(year)),))
+            by_job = {}
+            for job in year_jobs:
+                if int(job['mese_competenza']) == audit_month:
+                    by_job.setdefault(int(job['impianto_id']), []).append(job)
+            key = MESI[audit_month-1][0].lower()
+            results=[]
+            for _, plant in selected_plants.iterrows():
+                iid=int(plant['id']); cadence=clean(plant.get('tipo_manutenzione')).upper()
+                expected=months_for_cadence(cadence)
+                plans=by_plant.get(iid, [])
+                plan=plans[0].get(key) if len(plans)==1 else None
+                jobs=by_job.get(iid, [])
+                if len(plans)!=1:
+                    verdict='PIANO MANCANTE O DUPLICATO'
+                elif expected is None or not cadence:
+                    verdict='CADENZA MANUALE / DA DEFINIRE'
+                elif (audit_month in expected) != (plan is True):
+                    verdict='DIFFERENZA CADENZA / PIANO - VERIFICARE ECCEZIONE'
+                elif plan is True and not jobs:
+                    verdict='VISITA PROGRAMMATA MA NON GENERATA'
+                elif plan is False and jobs:
+                    verdict='VISITA PRESENTE MA NON PROGRAMMATA'
+                elif plan is None:
+                    verdict='MESE DA VERIFICARE (?)'
+                elif len(jobs)>1:
+                    verdict='VISITE DUPLICATE'
+                else:
+                    verdict='COERENTE'
+                if verdict != 'COERENTE' or (audit_month in (expected or [])) or jobs:
+                    results.append({'Codice':plant.get('codice'),'Matricola':plant.get('matricola'),
+                        'Indirizzo':plant.get('indirizzo'),'Tecnico':plant.get('tecnico_assegnato'),
+                        'Cadenza':cadence,'Prevista da cadenza':('S' if audit_month in expected else 'N') if expected is not None and cadence else '?',
+                        'Piano online':('S' if plan is True else 'N' if plan is False else '?'),
+                        'Visite presenti':len(jobs),'Stati':', '.join(str(j.get('stato','')) for j in jobs),
+                        'Esito':verdict})
+            report=pd.DataFrame(results)
+            if report.empty:
+                st.info('Nessun risultato per i filtri selezionati.')
+            else:
+                st.write(f'Impianti analizzati: **{len(selected_plants)}** · Righe del controllo: **{len(report)}**')
+                st.dataframe(report['Esito'].value_counts().rename_axis('Esito').reset_index(name='Numero'), hide_index=True)
+                st.dataframe(report[report['Esito']!='COERENTE'], hide_index=True, use_container_width=True)
+                st.download_button('⬇️ Scarica verifica completa Excel',
+                    data=make_audit_excel(report), file_name=f'verifica_cadenze_{year}_{audit_month:02d}.xlsx',
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='audit_export')
     if not plant_rows.empty:
         plans_year = plan_rows[plan_rows['anno'].astype(int) == year].copy() if not plan_rows.empty else pd.DataFrame()
         if not plans_year.empty:
