@@ -449,6 +449,33 @@ def cancel_job(job_id, reason):
     }).eq('id',int(job_id)).eq('stato','ESEGUITA').execute()
     invalidate_data()
 
+def correct_executor(job_id, new_executor, reason):
+    """Corregge solo l'esecutore di una visita eseguita, salvando prima l'originale."""
+    client = db()
+    records = client.table('manutenzioni_v2').select('*').eq('id', int(job_id)).execute().data
+    if len(records) != 1 or records[0].get('stato') != 'ESEGUITA':
+        raise ValueError('Registrazione non trovata o non più eseguita.')
+    old = records[0]
+    previous = clean(old.get('tecnico_esecutore'))
+    if not clean(new_executor) or previous == clean(new_executor):
+        raise ValueError('Seleziona un tecnico esecutore diverso da quello attuale.')
+    if not reason.strip():
+        raise ValueError('Inserisci il motivo della correzione.')
+    # Si utilizza lo storico già esistente, identificando esplicitamente la correzione.
+    client.table('storico_annullamenti_v2').insert({
+        'manutenzione_id': int(job_id), 'dati_precedenti': old,
+        'motivo': 'CORREZIONE TECNICO ESECUTORE: ' + reason.strip()
+                  + f' | da {previous} a {clean(new_executor)}',
+        'annullato_il': datetime.now().astimezone().isoformat()
+    }).execute()
+    updated = client.table('manutenzioni_v2').update({
+        'tecnico_esecutore': clean(new_executor)
+    }).eq('id', int(job_id)).eq('stato', 'ESEGUITA').eq('tecnico_esecutore', previous).execute().data
+    if len(updated) != 1:
+        raise ValueError('La registrazione è cambiata nel frattempo: controlla i dati e lo storico.')
+    invalidate_data()
+
+
 def update_plan_safely(plant_id, year, months, reason):
     """Edit annual S/N plan; preserve completed jobs; log change before mutation."""
     client=db()
@@ -1056,6 +1083,35 @@ if area=='📊 Amministratore':
         display = completed[['codice','indirizzo','cliente','mese_nome','anno_competenza','tecnico_esecutore','eseguita_il','semestrale','biennale','scadenza_biennale','note']].copy()
         display.columns=['Codice','Indirizzo','Cliente','Mese','Anno','Tecnico esecutore','Data esecuzione','Semestrale','Biennale','Scadenza biennale','Note']
         st.dataframe(display.fillna(''),hide_index=True,use_container_width=True)
+        st.markdown('#### ✏️ Correggi tecnico esecutore')
+        st.caption('Modifica solo il tecnico che ha effettuato la visita. Data, stato ESEGUITA, semestrale, biennale e note rimangono invariati. La correzione è tracciata nello storico.')
+        correction_options = {int(r['id']): f"{r['codice']} · {r['indirizzo']} · {r['mese_nome']} {r['anno_competenza']} · attuale: {r['tecnico_esecutore']}" for _,r in completed.iterrows()}
+        correction_id = st.selectbox('Manutenzione da correggere', list(correction_options),
+                                     format_func=lambda k: correction_options[k], index=None,
+                                     placeholder='Seleziona la manutenzione eseguita', key='correction_job')
+        if correction_id is not None:
+            selected_row = completed[completed['id'] == correction_id].iloc[0]
+            st.info(f"Tecnico registrato: **{selected_row['tecnico_esecutore']}**")
+            available_operators = sorted(set(operators()) | {'Cristian Malfatti', 'Sandro Benedetti', 'Barattini Alessandro'})
+            new_executor = st.selectbox('Tecnico che ha realmente eseguito la manutenzione',
+                                        available_operators, index=None, placeholder='Seleziona il tecnico corretto',
+                                        key=f'correction_operator_{correction_id}')
+            correction_reason = st.text_input('Motivo della correzione',
+                                               value='Errata attribuzione del tecnico esecutore',
+                                               key=f'correction_reason_{correction_id}')
+            correction_confirm = st.checkbox('Confermo la correzione del solo tecnico esecutore',
+                                              key=f'correction_confirm_{correction_id}')
+            if st.button('SALVA CORREZIONE TECNICO', type='primary',
+                         disabled=not (correction_confirm and new_executor and correction_reason.strip()
+                                       and new_executor != clean(selected_row['tecnico_esecutore'])),
+                         key=f'correction_save_{correction_id}'):
+                try:
+                    correct_executor(correction_id, new_executor, correction_reason)
+                except Exception as exc:
+                    st.error('Correzione non completata: ' + str(exc))
+                else:
+                    st.success('Tecnico esecutore corretto. Tutti gli altri dati sono invariati.')
+                    st.rerun()
         st.markdown('#### ↩ Annullamento di una manutenzione errata')
         choices = {int(r['id']): f"{r['codice']} · {r['indirizzo']} · {r['mese_nome']} {r['anno_competenza']} · {r['eseguita_il']}" for _,r in completed.iterrows()}
         chosen = st.selectbox('Seleziona la registrazione da annullare',options=list(choices),format_func=lambda k: choices[k],index=None,placeholder='Seleziona una manutenzione')
