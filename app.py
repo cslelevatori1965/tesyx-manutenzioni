@@ -227,6 +227,7 @@ def invalidate_data():
     official_active.clear()
     get_status_overrides.clear()
     dataset.clear()
+    cached_programming_excel.clear()
 
 def seed_if_needed():
     # La nuova base dati viene caricata esclusivamente da Amministratore.
@@ -349,7 +350,7 @@ def apply_status(jobs):
     jobs = jobs.copy()
     def row_status(r):
         override = overrides.get(int(r['impianto_id']))
-        status = override['stato'] if override else initial_status(r.get('note_impianto'))
+        status = r['stato_impianto']
         if r['stato'] == 'ESEGUITA': return 'ESEGUITA'
         if status != 'ATTIVO': return 'DA NON FARE'
         # In caso di riattivazione non si recuperano i mesi antecedenti.
@@ -365,7 +366,10 @@ def apply_status(jobs):
         if (year,month) < (now.year,now.month): return 'SCADUTA'
         return 'DA FARE'
     jobs['stato_impianto'] = jobs['impianto_id'].map(lambda x: overrides.get(int(x), {}).get('stato'))
-    jobs['stato_impianto'] = jobs.apply(lambda r: r['stato_impianto'] or initial_status(r.get('note_impianto')),axis=1)
+    # Calcola l'analisi delle note una volta per impianto, non per ogni visita mensile.
+    note_status = {iid: initial_status(note) for iid, note in
+                   jobs[['impianto_id', 'note_impianto']].drop_duplicates('impianto_id').itertuples(index=False, name=None)}
+    jobs['stato_impianto'] = jobs['stato_impianto'].fillna(jobs['impianto_id'].map(note_status))
     jobs['stato_ui'] = jobs.apply(row_status,axis=1)
     return jobs
 
@@ -638,6 +642,14 @@ def activate_official_archive(source):
     invalidate_data()
     return {'impianti_ufficiali':len(official),'programmazioni_ufficiali':len(plans),'manutenzioni_da_fare_ufficiali':len(jobs),'vecchio_archivio':'conservato, non cancellato'}
 
+@st.cache_data(ttl=45, show_spinner=False, max_entries=4)
+def cached_programming_excel(frame, export_year):
+    """Evita di ricreare l'Excel a ogni clic o cambio filtro."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        frame.to_excel(writer, index=False, sheet_name=f'Programmazione {export_year}')
+    return buffer.getvalue()
+
 def make_audit_excel(frame):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -647,10 +659,7 @@ def make_audit_excel(frame):
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
-if year not in st.session_state.get('_ensured_years', set()):
-    # ensure_jobs(year)
-    st.session_state.setdefault('_ensured_years', set()).add(year)
-    invalidate_data()
+# La generazione automatica resta disabilitata. Non svuotare le cache a ogni accesso.
 p=dataset(year); now=datetime.now()
 if p.empty and area!='📊 Amministratore': st.warning('Nessuna manutenzione disponibile. Chiedi all’amministratore di importare il file Excel.'); st.stop()
 
@@ -757,10 +766,7 @@ if area=='📊 Amministratore':
         for name,_,_ in MESI:
             export[name.upper()] = archive[name.lower()].map(lambda x: '?' if pd.isna(x) else ('S' if x is True or str(x).lower()=='true' else 'N'))
         export['Visite anno'] = (export[[name.upper() for name,_,_ in MESI]] == 'S').sum(axis=1)
-        export_buf = io.BytesIO()
-        with pd.ExcelWriter(export_buf,engine='openpyxl') as writer:
-            export.to_excel(writer,index=False,sheet_name=f'Programmazione {year}')
-        st.download_button('⬇️ Scarica archivio Excel aggiornato',export_buf.getvalue(),file_name=f'TESYX_programmazione_{year}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'export_plan_{year}')
+        st.download_button('⬇️ Scarica archivio Excel aggiornato',cached_programming_excel(export, year),file_name=f'TESYX_programmazione_{year}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'export_plan_{year}')
         st.caption('L’Excel contiene i dati e i mesi S/N presenti su Supabase. Scaricarlo non modifica nulla.')
         q_plan=st.text_input('🔎 Cerca impianto da programmare (codice, matricola, cliente, indirizzo)')
         found_plan=archive.copy()
