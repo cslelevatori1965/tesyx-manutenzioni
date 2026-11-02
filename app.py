@@ -802,80 +802,129 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
-    st.subheader('🔄 Aggiorna un singolo impianto da Excel · versione 4')
-    st.caption('Confronto e aggiornamento mirato: non modifica programmazioni, manutenzioni eseguite o storico.')
-    single_file = st.file_uploader('Carica il definitivo per gestionale aggiornato', type=['xlsx'], key='single_update_file')
-    if single_file is not None:
+    st.subheader('🔄 Sincronizza impianti da Excel · versione 5')
+    st.caption('Riconosce impianti nuovi e modificati ogni volta che carichi il file. Nessuna modifica automatica: scegli e conferma una scheda per volta.')
+    sync_file = st.file_uploader('Carica archivio Excel aggiornato', type=['xlsx'], key='sync_excel_v5')
+    if sync_file is not None:
         try:
-            single_df = pd.read_excel(single_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
-            single_df.columns = [re.sub(r'\s+', ' ', str(c)).strip().upper() for c in single_df.columns]
-            st.caption('Intestazioni lette: ' + ', '.join(single_df.columns[:12]))
-            mapping = {'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente',
-                       'NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica',
-                       "CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia',
-                       'TIPO MANUT.':'tipo_manutenzione','MANUTENTORE':'tecnico_assegnato'}
-            missing = [k for k in mapping if k not in single_df.columns]
-            if missing:
-                raise ValueError('Colonne mancanti: ' + ', '.join(missing))
-            single_df = single_df[(single_df['RAG. SOCIALE'].str.strip()!='') | (single_df['UBICAZIONE'].str.strip()!='')].copy()
-            active_plants = all_rows('impianti', 'id,codice,'+','.join(mapping.values()))
-            def normalize_identifier(v):
-                return re.sub(r'[^A-Z0-9]', '', clean(v).upper())
-            def pair(m, f):
-                return (normalize_identifier(m), normalize_identifier(f))
-            indexed = {}
-            for plant in active_plants:
-                k = pair(plant.get('matricola'), plant.get('numero_fabbrica'))
-                if all(k):
-                    indexed.setdefault(k, []).append(plant)
-            candidates = []
-            for excel_idx, excel_row in single_df.iterrows():
-                k = pair(excel_row['NUMERO MATRICOLA'], excel_row['NUMERO FABBRICA'])
-                if not all(k) or len(indexed.get(k, [])) != 1:
+            source = pd.read_excel(sync_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
+            source.columns = [re.sub(r'\s+', ' ', str(c)).strip().upper() for c in source.columns]
+            fields = {'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente',
+                      'NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica',
+                      "CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia',
+                      'TIPO MANUT.':'tipo_manutenzione','MANUTENTORE':'tecnico_assegnato'}
+            absent = [k for k in fields if k not in source.columns]
+            if absent: raise ValueError('Colonne mancanti: '+', '.join(absent))
+            source = source[(source['RAG. SOCIALE'].str.strip()!='') | (source['UBICAZIONE'].str.strip()!='')].copy()
+            plants = all_rows('impianti','id,codice,'+','.join(fields.values()))
+            def norm(v): return re.sub(r'[^A-Z0-9]','',clean(v).upper())
+            def ident(row, excel=False):
+                return (norm(row.get('NUMERO MATRICOLA' if excel else 'matricola')),
+                        norm(row.get('NUMERO FABBRICA' if excel else 'numero_fabbrica')))
+            by_pair = {}
+            for plant in plants:
+                k = ident(plant)
+                if all(k): by_pair.setdefault(k,[]).append(plant)
+            source_pairs = {}
+            for idx,r in source.iterrows():
+                k=ident(r,True)
+                if all(k): source_pairs.setdefault(k,[]).append(idx)
+            changes=[]; additions=[]; reviews=[]; unchanged=0
+            for idx,r in source.iterrows():
+                k=ident(r,True)
+                if not all(k) or len(source_pairs.get(k,[]))!=1:
+                    reviews.append((idx,'Matricola/fabbrica mancante o duplicata nel file'))
                     continue
-                plant = indexed[k][0]
-                matches_excel = single_df[
-                    (single_df['NUMERO MATRICOLA'].map(normalize_identifier)==k[0]) &
-                    (single_df['NUMERO FABBRICA'].map(normalize_identifier)==k[1])]
-                if len(matches_excel) != 1:
+                matched=by_pair.get(k,[])
+                if len(matched)>1:
+                    reviews.append((idx,'Identificativo duplicato nel gestionale'))
                     continue
-                changes = {}
-                for excel_col, db_col in mapping.items():
-                    new = clean(excel_row[excel_col])
-                    old = clean(plant.get(db_col))
-                    if new != old:
-                        changes[db_col] = {'prima':old, 'dopo':new}
-                if changes:
-                    candidates.append((excel_idx, plant, changes))
-            st.write(f'Impianti con corrispondenza univoca e differenze: **{len(candidates)}**')
-            if candidates:
-                choices = list(range(len(candidates)))
-                chosen = st.selectbox('Seleziona il SOLO impianto da aggiornare', choices,
-                    format_func=lambda i: f"{candidates[i][1]['codice']} · {candidates[i][1].get('indirizzo')} · {candidates[i][1].get('cliente')}",
-                    index=None, placeholder='Scegli un impianto', key='single_plant_choice')
-                if chosen is not None:
-                    _, plant, changes = candidates[chosen]
-                    st.dataframe(pd.DataFrame([{'Campo':k, **v} for k,v in changes.items()]),hide_index=True,use_container_width=True)
-                    st.warning('La cadenza e il tecnico, se modificati, aggiornano solo la scheda impianto. Le visite e i mesi programmati NON vengono rigenerati automaticamente.')
-                    st.info('Prima di salvare, prepara e scarica il backup ZIP dalla sezione sottostante.')
-                    approved = st.checkbox('Ho scaricato il backup e confermo le differenze di questo impianto',key='single_plant_confirm')
-                    if st.button('AGGIORNA SOLO QUESTO IMPIANTO',disabled=not approved,key='single_plant_save'):
-                        current = db().table('impianti_v2').select('id,'+','.join(mapping.values())).eq('id',int(plant['id'])).execute().data
-                        if len(current)!=1 or any(clean(current[0].get(k))!=v['prima'] for k,v in changes.items()):
-                            st.error('I dati sono cambiati nel frattempo: ricarica il confronto prima di procedere.')
+                if len(matched)==1:
+                    plant=matched[0]
+                    delta={col:(clean(plant.get(col)),clean(r[excel_col])) for excel_col,col in fields.items()
+                           if clean(plant.get(col))!=clean(r[excel_col])}
+                    if delta: changes.append((idx,plant,delta))
+                    else: unchanged+=1
+                else:
+                    # Un identificativo parziale già presente può essere una correzione, non un nuovo impianto.
+                    possible=[p for p in plants if (norm(p.get('matricola'))==k[0] and k[0])
+                              or (norm(p.get('numero_fabbrica'))==k[1] and k[1] and norm(p.get('codice_cliente'))==norm(r['COD. CLIENTE']))]
+                    if possible:
+                        reviews.append((idx,'Possibile impianto esistente con identificativi cambiati'))
+                    else: additions.append((idx,r))
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric('Nuovi',len(additions)); c2.metric('Modificati',len(changes))
+            c3.metric('Invariati',unchanged); c4.metric('Da verificare',len(reviews))
+            if reviews:
+                with st.expander('⚠️ Righe da verificare (nessuna modifica automatica)'):
+                    st.dataframe(pd.DataFrame([{'Riga Excel':int(i)+4,'Cliente':source.loc[i,'RAG. SOCIALE'],
+                        'Indirizzo':source.loc[i,'UBICAZIONE'],'Motivo':reason} for i,reason in reviews]),hide_index=True)
+            options=[('NUOVO',idx,r) for idx,r in additions]+[('MODIFICA',idx,(p,d)) for idx,p,d in changes]
+            if options:
+                selection=st.selectbox('Seleziona un impianto da elaborare',range(len(options)),index=None,
+                    format_func=lambda n: f"{options[n][0]} · {source.loc[options[n][1],'RAG. SOCIALE']} · {source.loc[options[n][1],'UBICAZIONE']} · {source.loc[options[n][1],'NUMERO MATRICOLA']}",
+                    placeholder='Scegli un impianto',key='sync_choice_v5')
+                if selection is not None:
+                    mode,idx,detail=options[selection]; row=source.loc[idx]
+                    if mode=='NUOVO':
+                        payload={dbcol:(clean(row[excelcol]) or None) for excelcol,dbcol in fields.items()}
+                        payload['tecnico_assegnato']=payload['tecnico_assegnato'] or 'Non assegnato'
+                        cadence=clean(payload['tipo_manutenzione']).upper()
+                        months=months_for_cadence(cadence)
+                        st.dataframe(pd.DataFrame([{'Campo':k,'Valore':v} for k,v in payload.items()]),hide_index=True)
+                        if months is None or not cadence:
+                            st.error('Cadenza non riconosciuta: definisci prima la programmazione manuale. Inserimento bloccato.')
                         else:
-                            payload = {k:(v['dopo'] or None) for k,v in changes.items()}
-                            updated = db().table('impianti_v2').update(payload).eq('id',int(plant['id'])).execute().data
-                            if len(updated)!=1:
-                                st.error('Aggiornamento non confermato. Verifica la scheda prima di riprovare.')
+                            st.write('Mesi programmati: **'+', '.join(MESI[m-1][1] for m in months)+'** (2026 e 2027)')
+                    else:
+                        plant,delta=detail
+                        st.dataframe(pd.DataFrame([{'Campo':k,'Prima':v[0],'Dopo':v[1]} for k,v in delta.items()]),hide_index=True)
+                        st.warning('Le modifiche a tecnico e cadenza non rigenerano le visite già programmate. Aggiorna separatamente i mesi S/N se necessario.')
+                    st.info('Scarica prima il backup completo Supabase nella sezione sottostante.')
+                    confirm=st.checkbox('Confermo il backup e i dati di questo singolo impianto',key='sync_confirm_v5')
+                    if st.button('SALVA SOLO QUESTO IMPIANTO',disabled=not confirm or (mode=='NUOVO' and (months is None or not cadence)),key='sync_save_v5'):
+                        client=db()
+                        # Rilettura dal database per prevenire doppio inserimento dopo un refresh.
+                        live=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,codice_cliente')
+                        key=ident(row,True)
+                        same=[p for p in live if ident(p)==key]
+                        if mode=='NUOVO':
+                            if same:
+                                st.error('Impianto già presente: operazione bloccata. Ricarica il file per aggiornare il confronto.')
                             else:
+                                import uuid
+                                newcode='NEW-'+uuid.uuid4().hex[:20].upper()
+                                created=client.table('impianti_v2').insert({'codice':newcode,**payload,'note':'INSERITO DA AGGIORNAMENTO EXCEL'}).execute().data
+                                if len(created)!=1: raise ValueError('Inserimento non confermato: verifica su Supabase prima di riprovare.')
+                                iid=int(created[0]['id'])
+                                try:
+                                    for yr in (2026,2027):
+                                        plan={'impianto_id':iid,'anno':yr,**{name.lower():(m in months) for name,_,m in MESI}}
+                                        client.table('programmazione_v2').insert(plan).execute()
+                                        for m in months:
+                                            client.table('manutenzioni_v2').insert({'impianto_id':iid,'anno_competenza':yr,
+                                                'mese_competenza':m,'tecnico_assegnato':payload['tecnico_assegnato'],'stato':'DA_FARE'}).execute()
+                                except Exception as exc:
+                                    invalidate_data()
+                                    raise ValueError(f'Impianto creato (ID {iid}) ma programmazione incompleta. NON riprovare: verifica e completa manualmente. Dettaglio: {exc}') from exc
                                 invalidate_data()
-                                st.success('Aggiornato un solo impianto. Storico e programmazioni non modificati.')
-                                st.rerun()
+                                st.success('Nuovo impianto inserito con programmazione 2026 e 2027. Ricarica la pagina per verificare.')
+                        else:
+                            if len(same)!=1 or int(same[0]['id'])!=int(plant['id']):
+                                st.error('Identificativi cambiati nel database: aggiornamento bloccato.')
+                            else:
+                                current=client.table('impianti_v2').select('id,'+','.join(fields.values())).eq('id',int(plant['id'])).execute().data
+                                if len(current)!=1 or any(clean(current[0].get(k))!=v[0] for k,v in delta.items()):
+                                    st.error('Scheda modificata nel frattempo: ricarica il confronto.')
+                                else:
+                                    updated=client.table('impianti_v2').update({k:(v[1] or None) for k,v in delta.items()}).eq('id',int(plant['id'])).execute().data
+                                    if len(updated)!=1: raise ValueError('Salvataggio non confermato.')
+                                    invalidate_data()
+                                    st.success('Scheda aggiornata. Storico e programmazioni non toccati.')
             else:
-                st.info('Nessuna differenza con corrispondenza univoca su matricola e numero fabbrica. I casi ambigui non vengono aggiornati.')
+                st.success('Nessun nuovo impianto o modifica certa da applicare.')
         except Exception as exc:
-            st.error('Aggiornamento non disponibile: '+str(exc))
+            st.error('Sincronizzazione non completata: '+str(exc))
     st.divider()
     st.subheader('🧪 Anteprima nuovo archivio Excel (senza scrivere su Supabase)')
     st.caption('Legge il Foglio1 del file definitivo per gestionale.xlsx. Non importa, cancella o aggiorna alcun dato.')
