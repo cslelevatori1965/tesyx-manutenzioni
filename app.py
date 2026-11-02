@@ -219,7 +219,7 @@ def official_active():
 def all_rows(table, cols='*'):
     rows=cached_rows(table, cols)
     if table=='impianti' and official_active():
-        return [r for r in rows if str(r.get('codice','')).startswith('OFF-2026-')]
+        return [r for r in rows if str(r.get('codice','')).startswith(('OFF-2026-', 'NEW-'))]
     return rows
 
 def invalidate_data():
@@ -802,7 +802,7 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
-    st.subheader('🔄 Sincronizza impianti da Excel · versione 5')
+    st.subheader('🔄 Sincronizza impianti da Excel · versione 6')
     st.caption('Riconosce impianti nuovi e modificati ogni volta che carichi il file. Nessuna modifica automatica: scegli e conferma una scheda per volta.')
     sync_file = st.file_uploader('Carica archivio Excel aggiornato', type=['xlsx'], key='sync_excel_v5')
     if sync_file is not None:
@@ -821,37 +821,64 @@ if area=='📊 Amministratore':
             def ident(row, excel=False):
                 return (norm(row.get('NUMERO MATRICOLA' if excel else 'matricola')),
                         norm(row.get('NUMERO FABBRICA' if excel else 'numero_fabbrica')))
-            by_pair = {}
+            # Incrocia più identificativi senza classificare automaticamente i casi ambigui.
+            from collections import defaultdict
+            by_pair=defaultdict(list); by_client_address=defaultdict(list)
+            by_mat=defaultdict(list); by_factory=defaultdict(list)
+            def place_key(v): return norm(v)
+            def location_key(r, excel=False):
+                def field(x,y): return r.get(x if excel else y)
+                return (norm(field('COD. CLIENTE','codice_cliente')),
+                        place_key(field('UBICAZIONE','indirizzo')),
+                        place_key(field("CITTA'",'comune')))
             for plant in plants:
-                k = ident(plant)
-                if all(k): by_pair.setdefault(k,[]).append(plant)
-            source_pairs = {}
+                k=ident(plant)
+                if all(k): by_pair[k].append(plant)
+                if k[0]: by_mat[k[0]].append(plant)
+                if k[1]: by_factory[k[1]].append(plant)
+                loc=location_key(plant)
+                if all(loc): by_client_address[loc].append(plant)
+            source_pairs=defaultdict(list); source_locations=defaultdict(list)
             for idx,r in source.iterrows():
                 k=ident(r,True)
-                if all(k): source_pairs.setdefault(k,[]).append(idx)
+                if all(k): source_pairs[k].append(idx)
+                loc=location_key(r,True)
+                if all(loc): source_locations[loc].append(idx)
             changes=[]; additions=[]; reviews=[]; unchanged=0
             for idx,r in source.iterrows():
-                k=ident(r,True)
-                if not all(k) or len(source_pairs.get(k,[]))!=1:
-                    reviews.append((idx,'Matricola/fabbrica mancante o duplicata nel file'))
-                    continue
-                matched=by_pair.get(k,[])
-                if len(matched)>1:
-                    reviews.append((idx,'Identificativo duplicato nel gestionale'))
-                    continue
-                if len(matched)==1:
-                    plant=matched[0]
+                k=ident(r,True); loc=location_key(r,True)
+                if all(k) and len(source_pairs[k])>1:
+                    reviews.append((idx,'Matricola e fabbrica duplicate nel file')); continue
+                if all(loc) and len(source_locations[loc])>1:
+                    reviews.append((idx,'Cliente e indirizzo duplicati nel file')); continue
+                exact=by_pair.get(k,[]) if all(k) else []
+                at_address=by_client_address.get(loc,[]) if all(loc) else []
+                # Un riscontro tecnico o geografico in conflitto richiede verifica.
+                candidate_ids={p['id']:p for p in exact+at_address}
+                if len(candidate_ids)>1:
+                    reviews.append((idx,'Identificativi in conflitto: più impianti possibili')); continue
+                if len(candidate_ids)==1:
+                    plant=next(iter(candidate_ids.values()))
                     delta={col:(clean(plant.get(col)),clean(r[excel_col])) for excel_col,col in fields.items()
                            if clean(plant.get(col))!=clean(r[excel_col])}
                     if delta: changes.append((idx,plant,delta))
                     else: unchanged+=1
+                    continue
+                # Anche se uno solo dei dati tecnici coincide, non inserire automaticamente.
+                partial=[]
+                if k[0]: partial.extend(by_mat.get(k[0],[]))
+                if k[1]:
+                    partial.extend(p for p in by_factory.get(k[1],[])
+                                   if norm(p.get('codice_cliente'))==norm(r.get('COD. CLIENTE')))
+                # Stesso stabile, anche con codice cliente diverso: evitare duplicazioni.
+                same_site=[p for p in plants if place_key(p.get('indirizzo'))==loc[1]
+                           and place_key(p.get('comune'))==loc[2] and all(loc[1:])]
+                if partial or same_site:
+                    reviews.append((idx,'Possibile impianto già presente: verifica identificativi o stabile'))
+                elif not any(loc[1:]):
+                    reviews.append((idx,'Indirizzo/comune insufficienti per inserimento'))
                 else:
-                    # Un identificativo parziale già presente può essere una correzione, non un nuovo impianto.
-                    possible=[p for p in plants if (norm(p.get('matricola'))==k[0] and k[0])
-                              or (norm(p.get('numero_fabbrica'))==k[1] and k[1] and norm(p.get('codice_cliente'))==norm(r['COD. CLIENTE']))]
-                    if possible:
-                        reviews.append((idx,'Possibile impianto esistente con identificativi cambiati'))
-                    else: additions.append((idx,r))
+                    additions.append((idx,r))
             c1,c2,c3,c4=st.columns(4)
             c1.metric('Nuovi',len(additions)); c2.metric('Modificati',len(changes))
             c3.metric('Invariati',unchanged); c4.metric('Da verificare',len(reviews))
@@ -885,9 +912,9 @@ if area=='📊 Amministratore':
                     if st.button('SALVA SOLO QUESTO IMPIANTO',disabled=not confirm or (mode=='NUOVO' and (months is None or not cadence)),key='sync_save_v5'):
                         client=db()
                         # Rilettura dal database per prevenire doppio inserimento dopo un refresh.
-                        live=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,codice_cliente')
+                        live=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,codice_cliente,indirizzo,comune')
                         key=ident(row,True)
-                        same=[p for p in live if ident(p)==key]
+                        same=[p for p in live if (all(key) and ident(p)==key) or (all(location_key(row,True)) and location_key(p)==location_key(row,True)) or (norm(p.get('matricola')) and norm(p.get('matricola'))==key[0]) or (norm(p.get('numero_fabbrica')) and norm(p.get('numero_fabbrica'))==key[1] and norm(p.get('codice_cliente'))==norm(row.get('COD. CLIENTE')))]
                         if mode=='NUOVO':
                             if same:
                                 st.error('Impianto già presente: operazione bloccata. Ricarica il file per aggiornare il confronto.')
@@ -910,7 +937,7 @@ if area=='📊 Amministratore':
                                 invalidate_data()
                                 st.success('Nuovo impianto inserito con programmazione 2026 e 2027. Ricarica la pagina per verificare.')
                         else:
-                            if len(same)!=1 or int(same[0]['id'])!=int(plant['id']):
+                            if int(plant['id']) not in {int(x['id']) for x in same}:
                                 st.error('Identificativi cambiati nel database: aggiornamento bloccato.')
                             else:
                                 current=client.table('impianti_v2').select('id,'+','.join(fields.values())).eq('id',int(plant['id'])).execute().data
