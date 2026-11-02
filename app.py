@@ -882,7 +882,7 @@ if area=='📊 Amministratore':
     if preview_upload is not None:
         try:
             raw = pd.read_excel(preview_upload, sheet_name='Foglio1', header=2, dtype=str).fillna('')
-            raw.columns = [str(x).replace('\n',' ').strip().upper() for x in raw.columns]
+            raw.columns = [re.sub(r'\s+', ' ', str(x)).strip().upper() for x in raw.columns]
             needed = ['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
             missing = [x for x in needed if x not in raw.columns]
             if missing:
@@ -942,7 +942,7 @@ if area=='📊 Amministratore':
     if official_file is not None:
         try:
             source=pd.read_excel(official_file,sheet_name='Foglio1',header=2,dtype=str).fillna('')
-            source.columns=[str(c).replace('\n',' ').strip().upper() for c in source.columns]
+            source.columns=[re.sub(r'\s+', ' ', str(c)).strip().upper() for c in source.columns]
             required=['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
             if any(c not in source.columns for c in required):
                 raise ValueError('Colonne mancanti: '+', '.join(c for c in required if c not in source.columns))
