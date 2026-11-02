@@ -802,9 +802,9 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
-    st.subheader('🔄 Sincronizza impianti da Excel · versione 6')
+    st.subheader('🔄 Sincronizza impianti da Excel · versione 7 (matricola / fabbrica)')
     st.caption('Riconosce impianti nuovi e modificati ogni volta che carichi il file. Nessuna modifica automatica: scegli e conferma una scheda per volta.')
-    sync_file = st.file_uploader('Carica archivio Excel aggiornato', type=['xlsx'], key='sync_excel_v5')
+    sync_file = st.file_uploader('Carica archivio Excel aggiornato', type=['xlsx'], key='sync_excel_v7')
     if sync_file is not None:
         try:
             source = pd.read_excel(sync_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
@@ -821,63 +821,49 @@ if area=='📊 Amministratore':
             def ident(row, excel=False):
                 return (norm(row.get('NUMERO MATRICOLA' if excel else 'matricola')),
                         norm(row.get('NUMERO FABBRICA' if excel else 'numero_fabbrica')))
-            # Incrocia più identificativi senza classificare automaticamente i casi ambigui.
+            # Identificazione: matricola se presente, altrimenti numero fabbrica.
+            # CAP, cliente e indirizzo NON sono identificativi univoci.
             from collections import defaultdict
-            by_pair=defaultdict(list); by_client_address=defaultdict(list)
-            by_mat=defaultdict(list); by_factory=defaultdict(list)
-            def place_key(v): return norm(v)
-            def location_key(r, excel=False):
-                def field(x,y): return r.get(x if excel else y)
-                return (norm(field('COD. CLIENTE','codice_cliente')),
-                        place_key(field('UBICAZIONE','indirizzo')),
-                        place_key(field("CITTA'",'comune')))
+            def technical_key(row, excel=False):
+                mat,fab=ident(row,excel)
+                return ('MAT',mat) if mat else (('FAB',fab) if fab else None)
+            db_keys=defaultdict(list); file_keys=defaultdict(list)
             for plant in plants:
-                k=ident(plant)
-                if all(k): by_pair[k].append(plant)
-                if k[0]: by_mat[k[0]].append(plant)
-                if k[1]: by_factory[k[1]].append(plant)
-                loc=location_key(plant)
-                if all(loc): by_client_address[loc].append(plant)
-            source_pairs=defaultdict(list); source_locations=defaultdict(list)
+                k=technical_key(plant)
+                if k: db_keys[k].append(plant)
             for idx,r in source.iterrows():
-                k=ident(r,True)
-                if all(k): source_pairs[k].append(idx)
-                loc=location_key(r,True)
-                if all(loc): source_locations[loc].append(idx)
+                k=technical_key(r,True)
+                if k: file_keys[k].append(idx)
             changes=[]; additions=[]; reviews=[]; unchanged=0
             for idx,r in source.iterrows():
-                k=ident(r,True); loc=location_key(r,True)
-                if all(k) and len(source_pairs[k])>1:
-                    reviews.append((idx,'Matricola e fabbrica duplicate nel file')); continue
-                if all(loc) and len(source_locations[loc])>1:
-                    reviews.append((idx,'Cliente e indirizzo duplicati nel file')); continue
-                exact=by_pair.get(k,[]) if all(k) else []
-                at_address=by_client_address.get(loc,[]) if all(loc) else []
-                # Un riscontro tecnico o geografico in conflitto richiede verifica.
-                candidate_ids={p['id']:p for p in exact+at_address}
-                if len(candidate_ids)>1:
-                    reviews.append((idx,'Identificativi in conflitto: più impianti possibili')); continue
-                if len(candidate_ids)==1:
-                    plant=next(iter(candidate_ids.values()))
+                k=technical_key(r,True)
+                if not k:
+                    reviews.append((idx,'Matricola e numero fabbrica mancanti')); continue
+                if len(file_keys[k])!=1:
+                    reviews.append((idx,'Identificativo tecnico ripetuto nel file')); continue
+                matched=db_keys.get(k,[])
+                if len(matched)>1:
+                    reviews.append((idx,'Identificativo tecnico ripetuto nel database')); continue
+                if len(matched)==1:
+                    plant=matched[0]
+                    old_site=(norm(plant.get('codice_cliente')),norm(plant.get('comune')),norm(plant.get('indirizzo')))
+                    new_site=(norm(r.get('COD. CLIENTE')),norm(r.get("CITTA'")),norm(r.get('UBICAZIONE')))
+                    if all(old_site) and all(new_site) and old_site!=new_site:
+                        reviews.append((idx,'Identificativo esistente ma cliente/ubicazione differenti')); continue
                     delta={col:(clean(plant.get(col)),clean(r[excel_col])) for excel_col,col in fields.items()
                            if clean(plant.get(col))!=clean(r[excel_col])}
                     if delta: changes.append((idx,plant,delta))
                     else: unchanged+=1
-                    continue
-                # Anche se uno solo dei dati tecnici coincide, non inserire automaticamente.
-                partial=[]
-                if k[0]: partial.extend(by_mat.get(k[0],[]))
-                if k[1]:
-                    partial.extend(p for p in by_factory.get(k[1],[])
-                                   if norm(p.get('codice_cliente'))==norm(r.get('COD. CLIENTE')))
-                # Stesso stabile, anche con codice cliente diverso: evitare duplicazioni.
-                same_site=[p for p in plants if place_key(p.get('indirizzo'))==loc[1]
-                           and place_key(p.get('comune'))==loc[2] and all(loc[1:])]
-                if partial or same_site:
-                    reviews.append((idx,'Possibile impianto già presente: verifica identificativi o stabile'))
-                elif not any(loc[1:]):
-                    reviews.append((idx,'Indirizzo/comune insufficienti per inserimento'))
                 else:
+                    # Controlla anche che l'altro identificativo tecnico, se presente,
+                    # non appartenga già a una scheda diversa.
+                    mat,fab=ident(r,True)
+                    conflicts=[p for p in plants if (mat and norm(p.get('matricola'))==mat)
+                               or (fab and norm(p.get('numero_fabbrica'))==fab)]
+                    if conflicts:
+                        reviews.append((idx,'Possibile impianto esistente con identificativo alternativo')); continue
+                    if not norm(r.get('UBICAZIONE')) or not norm(r.get("CITTA'")):
+                        reviews.append((idx,'Ubicazione o comune mancanti')); continue
                     additions.append((idx,r))
             c1,c2,c3,c4=st.columns(4)
             c1.metric('Nuovi',len(additions)); c2.metric('Modificati',len(changes))
@@ -890,7 +876,7 @@ if area=='📊 Amministratore':
             if options:
                 selection=st.selectbox('Seleziona un impianto da elaborare',range(len(options)),index=None,
                     format_func=lambda n: f"{options[n][0]} · {source.loc[options[n][1],'RAG. SOCIALE']} · {source.loc[options[n][1],'UBICAZIONE']} · {source.loc[options[n][1],'NUMERO MATRICOLA']}",
-                    placeholder='Scegli un impianto',key='sync_choice_v5')
+                    placeholder='Scegli un impianto',key='sync_choice_v7')
                 if selection is not None:
                     mode,idx,detail=options[selection]; row=source.loc[idx]
                     if mode=='NUOVO':
@@ -908,13 +894,15 @@ if area=='📊 Amministratore':
                         st.dataframe(pd.DataFrame([{'Campo':k,'Prima':v[0],'Dopo':v[1]} for k,v in delta.items()]),hide_index=True)
                         st.warning('Le modifiche a tecnico e cadenza non rigenerano le visite già programmate. Aggiorna separatamente i mesi S/N se necessario.')
                     st.info('Scarica prima il backup completo Supabase nella sezione sottostante.')
-                    confirm=st.checkbox('Confermo il backup e i dati di questo singolo impianto',key='sync_confirm_v5')
-                    if st.button('SALVA SOLO QUESTO IMPIANTO',disabled=not confirm or (mode=='NUOVO' and (months is None or not cadence)),key='sync_save_v5'):
+                    confirm=st.checkbox('Confermo il backup e i dati di questo singolo impianto',key='sync_confirm_v7')
+                    if st.button('SALVA SOLO QUESTO IMPIANTO',disabled=not confirm or (mode=='NUOVO' and (months is None or not cadence)),key='sync_save_v7'):
                         client=db()
                         # Rilettura dal database per prevenire doppio inserimento dopo un refresh.
                         live=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,codice_cliente,indirizzo,comune')
                         key=ident(row,True)
-                        same=[p for p in live if (all(key) and ident(p)==key) or (all(location_key(row,True)) and location_key(p)==location_key(row,True)) or (norm(p.get('matricola')) and norm(p.get('matricola'))==key[0]) or (norm(p.get('numero_fabbrica')) and norm(p.get('numero_fabbrica'))==key[1] and norm(p.get('codice_cliente'))==norm(row.get('COD. CLIENTE')))]
+                        # Ricontrollo immediato: blocca solo la stessa matricola.
+                        # Stesso indirizzo/cliente/numero fabbrica non implica duplicato.
+                        same=[p for p in live if (key[0] and norm(p.get('matricola'))==key[0]) or (key[1] and norm(p.get('numero_fabbrica'))==key[1])]
                         if mode=='NUOVO':
                             if same:
                                 st.error('Impianto già presente: operazione bloccata. Ricarica il file per aggiornare il confronto.')
