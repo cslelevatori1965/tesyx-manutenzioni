@@ -802,13 +802,14 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
-    st.subheader('🔄 Aggiorna un singolo impianto da Excel')
+    st.subheader('🔄 Aggiorna un singolo impianto da Excel · versione 4')
     st.caption('Confronto e aggiornamento mirato: non modifica programmazioni, manutenzioni eseguite o storico.')
     single_file = st.file_uploader('Carica il definitivo per gestionale aggiornato', type=['xlsx'], key='single_update_file')
     if single_file is not None:
         try:
             single_df = pd.read_excel(single_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
-            single_df.columns = [str(c).replace('\\n',' ').strip().upper() for c in single_df.columns]
+            single_df.columns = [re.sub(r'\s+', ' ', str(c)).strip().upper() for c in single_df.columns]
+            st.caption('Intestazioni lette: ' + ', '.join(single_df.columns[:12]))
             mapping = {'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente',
                        'NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica',
                        "CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia',
