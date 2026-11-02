@@ -802,6 +802,80 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
+    st.subheader('🔄 Aggiorna un singolo impianto da Excel')
+    st.caption('Confronto e aggiornamento mirato: non modifica programmazioni, manutenzioni eseguite o storico.')
+    single_file = st.file_uploader('Carica il definitivo per gestionale aggiornato', type=['xlsx'], key='single_update_file')
+    if single_file is not None:
+        try:
+            single_df = pd.read_excel(single_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
+            single_df.columns = [str(c).replace('\\n',' ').strip().upper() for c in single_df.columns]
+            mapping = {'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente',
+                       'NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica',
+                       "CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia',
+                       'TIPO MANUT.':'tipo_manutenzione','MANUTENTORE':'tecnico_assegnato'}
+            missing = [k for k in mapping if k not in single_df.columns]
+            if missing:
+                raise ValueError('Colonne mancanti: ' + ', '.join(missing))
+            single_df = single_df[(single_df['RAG. SOCIALE'].str.strip()!='') | (single_df['UBICAZIONE'].str.strip()!='')].copy()
+            active_plants = all_rows('impianti', 'id,codice,'+','.join(mapping.values()))
+            def normalize_identifier(v):
+                return re.sub(r'[^A-Z0-9]', '', clean(v).upper())
+            def pair(m, f):
+                return (normalize_identifier(m), normalize_identifier(f))
+            indexed = {}
+            for plant in active_plants:
+                k = pair(plant.get('matricola'), plant.get('numero_fabbrica'))
+                if all(k):
+                    indexed.setdefault(k, []).append(plant)
+            candidates = []
+            for excel_idx, excel_row in single_df.iterrows():
+                k = pair(excel_row['NUMERO MATRICOLA'], excel_row['NUMERO FABBRICA'])
+                if not all(k) or len(indexed.get(k, [])) != 1:
+                    continue
+                plant = indexed[k][0]
+                matches_excel = single_df[
+                    (single_df['NUMERO MATRICOLA'].map(normalize_identifier)==k[0]) &
+                    (single_df['NUMERO FABBRICA'].map(normalize_identifier)==k[1])]
+                if len(matches_excel) != 1:
+                    continue
+                changes = {}
+                for excel_col, db_col in mapping.items():
+                    new = clean(excel_row[excel_col])
+                    old = clean(plant.get(db_col))
+                    if new != old:
+                        changes[db_col] = {'prima':old, 'dopo':new}
+                if changes:
+                    candidates.append((excel_idx, plant, changes))
+            st.write(f'Impianti con corrispondenza univoca e differenze: **{len(candidates)}**')
+            if candidates:
+                choices = list(range(len(candidates)))
+                chosen = st.selectbox('Seleziona il SOLO impianto da aggiornare', choices,
+                    format_func=lambda i: f"{candidates[i][1]['codice']} · {candidates[i][1].get('indirizzo')} · {candidates[i][1].get('cliente')}",
+                    index=None, placeholder='Scegli un impianto', key='single_plant_choice')
+                if chosen is not None:
+                    _, plant, changes = candidates[chosen]
+                    st.dataframe(pd.DataFrame([{'Campo':k, **v} for k,v in changes.items()]),hide_index=True,use_container_width=True)
+                    st.warning('La cadenza e il tecnico, se modificati, aggiornano solo la scheda impianto. Le visite e i mesi programmati NON vengono rigenerati automaticamente.')
+                    st.info('Prima di salvare, prepara e scarica il backup ZIP dalla sezione sottostante.')
+                    approved = st.checkbox('Ho scaricato il backup e confermo le differenze di questo impianto',key='single_plant_confirm')
+                    if st.button('AGGIORNA SOLO QUESTO IMPIANTO',disabled=not approved,key='single_plant_save'):
+                        current = db().table('impianti_v2').select('id,'+','.join(mapping.values())).eq('id',int(plant['id'])).execute().data
+                        if len(current)!=1 or any(clean(current[0].get(k))!=v['prima'] for k,v in changes.items()):
+                            st.error('I dati sono cambiati nel frattempo: ricarica il confronto prima di procedere.')
+                        else:
+                            payload = {k:(v['dopo'] or None) for k,v in changes.items()}
+                            updated = db().table('impianti_v2').update(payload).eq('id',int(plant['id'])).execute().data
+                            if len(updated)!=1:
+                                st.error('Aggiornamento non confermato. Verifica la scheda prima di riprovare.')
+                            else:
+                                invalidate_data()
+                                st.success('Aggiornato un solo impianto. Storico e programmazioni non modificati.')
+                                st.rerun()
+            else:
+                st.info('Nessuna differenza con corrispondenza univoca su matricola e numero fabbrica. I casi ambigui non vengono aggiornati.')
+        except Exception as exc:
+            st.error('Aggiornamento non disponibile: '+str(exc))
+    st.divider()
     st.subheader('🧪 Anteprima nuovo archivio Excel (senza scrivere su Supabase)')
     st.caption('Legge il Foglio1 del file definitivo per gestionale.xlsx. Non importa, cancella o aggiorna alcun dato.')
     preview_upload = st.file_uploader('Seleziona definitivo per gestionale.xlsx', type=['xlsx'], key='new_archive_preview')
