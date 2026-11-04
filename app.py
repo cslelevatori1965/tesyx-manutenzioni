@@ -1339,19 +1339,20 @@ else:
         return target.get(selected, tokens(selected)).issubset(words)
     if pilot_november:
         st.info('🧪 Novembre 2026: Cristian resta il tester. Può consultare e registrare anche le manutenzioni assegnate a Benedetti e Barattini.')
-        techs=['Cristian Malfatti', 'Sandro Benedetti', 'Alessandro Barattini']
+        techs=['TUTTI E TRE', 'Cristian Malfatti', 'Sandro Benedetti', 'Alessandro Barattini']
     else:
         if year == 2026:
             st.info('Storico 2026: consultazione secondo la programmazione esistente.')
         techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
     tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=0)
     if pilot_november:
-        st.caption(f'Impianti programmati attribuiti a {tech}: {int(p.assegnato.map(lambda x: tech_matches(x,tech)).sum())}')
+        total_pilot=int(p.assegnato.map(lambda x: any(tech_matches(x,t) for t in ['Cristian Malfatti','Sandro Benedetti','Alessandro Barattini'])).sum())
+        st.caption(f'Manutenzioni programmate dei tre tecnici: {total_pilot}')
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(0 if pilot_november else (now.month if now.month<=12 else 0)))
     if pilot_november and mese == 'TUTTI':
-        st.info(f'📅 Vista annuale {year}: manutenzioni di {tech} di tutti i mesi. Le biennali successive si registrano sulle manutenzioni già eseguite.')
+        st.info(f'📅 Vista annuale {year}: tutte le manutenzioni dei tre tecnici. La dicitura DA FARE è solo visiva: lo storico non cambia. Le biennali successive sono registrabili sulle manutenzioni già eseguite.')
     f=p.copy()
-    if pilot_november: f=f[f.assegnato.map(lambda x: tech_matches(x,tech))]
+    if pilot_november: f=f[f.assegnato.map(lambda x: any(tech_matches(x,t) for t in ['Cristian Malfatti','Sandro Benedetti','Alessandro Barattini']) if tech=='TUTTI E TRE' else tech_matches(x,tech))]
     elif tech!='TUTTI': f=f[f.assegnato==tech]
     if stato!='TUTTI': f=f[f.stato_ui==stato]
     if mese!='TUTTI': f=f[f.mese_nome==mese]
@@ -1370,7 +1371,7 @@ else:
         rr=p[p['id']==st.session_state.selected_job]
         if (not rr.empty and int(rr.iloc[0]['anno_competenza']) == year
                 and rr.iloc[0]['stato_ui'] in ('DA FARE','SCADUTA')
-                and (not pilot_november or tech_matches(rr.iloc[0]['assegnato'],tech))):
+                and (not pilot_november or any(tech_matches(rr.iloc[0]['assegnato'],t) for t in ['Cristian Malfatti','Sandro Benedetti','Alessandro Barattini']) if tech=='TUTTI E TRE' else tech_matches(rr.iloc[0]['assegnato'],tech))):
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
@@ -1450,7 +1451,7 @@ else:
         st.info(f'Visualizzi le manutenzioni da {start + 1} a {end} di {total_visits}.' if total_visits else 'Nessuna manutenzione da visualizzare.')
         for _,r in f.iloc[start:start+page_size].iterrows():
             with st.container(border=True):
-                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui in ('SCADUTA','DA NON FARE') else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · PROGR. {r['progressivo'] if pd.notna(r['progressivo']) else '-'} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write(r.stato_ui)
+                a,b,c=st.columns([6,2,2]); icon='🔴' if r.stato_ui in ('SCADUTA','DA NON FARE') else ('🟢' if r.stato_ui=='ESEGUITA' else '🟠'); a.markdown(f"**{icon} {r['indirizzo']} — {r['comune']}**"); a.caption(f"{r['cliente']} · PROGR. {r['progressivo'] if pd.notna(r['progressivo']) else '-'} · Matr. {r['matricola']} · Assegnato: {r['assegnato']}"); b.markdown(f"**{r['mese_nome']} {r['anno_competenza']}**"); b.write('DA FARE · vista Cristian' if pilot_november else r.stato_ui); b.caption(f'Stato reale: {r.stato_ui}' if pilot_november else '')
                 if r.stato_ui in ('DA FARE','SCADUTA') and date.today() < date(year, 1, 1):
                     c.caption(f'Registrazione disponibile dal 01/01/{year}')
                 elif r.stato_ui in ('DA FARE','SCADUTA'):
