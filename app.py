@@ -433,6 +433,32 @@ def close_job(job_id, oper, dt, sem, biennale, note):
     db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).eq('stato','DA_FARE').execute()
     invalidate_data()
 
+def add_biennale_to_completed(job_id, visit_date, note_extra=''):
+    """Aggiunge una visita biennale successiva senza riaprire la manutenzione."""
+    rows = db().table('manutenzioni_v2').select('id,stato,biennale,note,eseguita_il').eq('id', int(job_id)).execute().data
+    if len(rows) != 1 or rows[0].get('stato') != 'ESEGUITA':
+        raise ValueError('La manutenzione non risulta eseguita.')
+    if rows[0].get('biennale') is True:
+        raise ValueError('Una visita biennale risulta già registrata per questa manutenzione.')
+    if visit_date > date.today():
+        raise ValueError('Non è possibile registrare una visita futura.')
+    if rows[0].get('eseguita_il'):
+        performed = pd.to_datetime(rows[0]['eseguita_il'], errors='coerce')
+        if pd.notna(performed) and visit_date < performed.date():
+            raise ValueError('La data della biennale precede la manutenzione registrata.')
+    next_due = (visit_date + relativedelta(months=24)).isoformat()
+    existing_note = str(rows[0].get('note') or '').strip()
+    entry = f'Visita biennale effettuata il {visit_date:%d/%m/%Y}; esito/verbale in attesa.'
+    if note_extra.strip():
+        entry += ' Note visita: ' + note_extra.strip()
+    updated_note = (existing_note + '\n' + entry).strip()
+    result = (db().table('manutenzioni_v2')
+              .update({'biennale': True, 'scadenza_biennale': next_due, 'note': updated_note})
+              .eq('id', int(job_id)).eq('stato', 'ESEGUITA').eq('biennale', False).execute())
+    if not result.data:
+        raise ValueError('Registrazione non riuscita: aggiornare i dati e riprovare dopo verifica.')
+    invalidate_data()
+
 def cancel_job(job_id, reason):
     # Conserva una copia completa PRIMA di modificare il record.
     client = db()
@@ -1351,6 +1377,35 @@ else:
                     else:
                         del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
+    # Registrazione biennale successiva, senza riaprire la manutenzione ordinaria.
+    if 'selected_biennale_job' in st.session_state:
+        selected_id = st.session_state.selected_biennale_job
+        match = p[p['id'] == selected_id]
+        if (match.empty or match.iloc[0]['stato_ui'] != 'ESEGUITA'
+                or bool(match.iloc[0]['biennale'])
+                or (pilot_november and not is_cristian(match.iloc[0]['assegnato']))):
+            st.session_state.pop('selected_biennale_job', None)
+        else:
+            selected = match.iloc[0]
+            with st.container(border=True):
+                st.markdown('### Registra visita biennale successiva')
+                st.write(f"**{selected['indirizzo']}** — {selected['cliente']}")
+                st.caption('La manutenzione ordinaria resta chiusa. L’esito del verbale sarà gestito in una versione successiva.')
+                visit_date = st.date_input('Data effettiva della visita biennale', value=date.today(), key='biennale_date')
+                visit_notes = st.text_area('Osservazioni (facoltative)', key='biennale_notes')
+                b1, b2 = st.columns([3, 1])
+                if b1.button('CONFERMA VISITA BIENNALE', type='primary', use_container_width=True):
+                    try:
+                        add_biennale_to_completed(selected_id, visit_date, visit_notes)
+                    except Exception as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state.pop('selected_biennale_job', None)
+                        st.success('Visita biennale registrata; esito in attesa del verbale.')
+                        st.rerun()
+                if b2.button('Annulla visita', use_container_width=True):
+                    st.session_state.pop('selected_biennale_job', None)
+                    st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
         order={'SCADUTA':0,'DA FARE':1,'DA NON FARE':2,'NON AVVIATA':3,'ESEGUITA':4}
@@ -1429,6 +1484,10 @@ else:
                     c.caption('Prima della data di avvio')
                 else:
                     c.success(str(r.tecnico_esecutore or 'Eseguita')); c.caption(str(r.eseguita_il or ''))
+                    if not bool(r.biennale):
+                        if st.button('REGISTRA VISITA BIENNALE', key='biennale_'+str(r['id']), use_container_width=True):
+                            st.session_state.selected_biennale_job = int(r['id'])
+                            st.rerun()
                     if bool(r.semestrale): c.caption('☑ Semestrale')
                     if bool(r.biennale): c.caption(f'☑ Biennale · Prossima: {r.scadenza_biennale}')
 
