@@ -1347,7 +1347,9 @@ else:
     tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=0)
     if pilot_november:
         st.caption(f'Impianti programmati attribuiti a {tech}: {int(p.assegnato.map(lambda x: tech_matches(x,tech)).sum())}')
-    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
+    stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(0 if pilot_november else (now.month if now.month<=12 else 0)))
+    if pilot_november and mese == 'TUTTI':
+        st.info(f'📅 Vista annuale {year}: manutenzioni di {tech} di tutti i mesi. Le biennali successive si registrano sulle manutenzioni già eseguite.')
     f=p.copy()
     if pilot_november: f=f[f.assegnato.map(lambda x: tech_matches(x,tech))]
     elif tech!='TUTTI': f=f[f.assegnato==tech]
