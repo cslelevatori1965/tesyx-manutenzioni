@@ -1377,35 +1377,6 @@ else:
                     else:
                         del st.session_state.selected_job; st.success('Manutenzione registrata.'); st.rerun()
                 if b2.button('Annulla',use_container_width=True): del st.session_state.selected_job; st.rerun()
-    # Registrazione biennale successiva, senza riaprire la manutenzione ordinaria.
-    if 'selected_biennale_job' in st.session_state:
-        selected_id = st.session_state.selected_biennale_job
-        match = p[p['id'] == selected_id]
-        if (match.empty or match.iloc[0]['stato_ui'] != 'ESEGUITA'
-                or bool(match.iloc[0]['biennale'])
-                or (pilot_november and not is_cristian(match.iloc[0]['assegnato']))):
-            st.session_state.pop('selected_biennale_job', None)
-        else:
-            selected = match.iloc[0]
-            with st.container(border=True):
-                st.markdown('### Registra visita biennale successiva')
-                st.write(f"**{selected['indirizzo']}** — {selected['cliente']}")
-                st.caption('La manutenzione ordinaria resta chiusa. L’esito del verbale sarà gestito in una versione successiva.')
-                visit_date = st.date_input('Data effettiva della visita biennale', value=date.today(), key='biennale_date')
-                visit_notes = st.text_area('Osservazioni (facoltative)', key='biennale_notes')
-                b1, b2 = st.columns([3, 1])
-                if b1.button('CONFERMA VISITA BIENNALE', type='primary', use_container_width=True):
-                    try:
-                        add_biennale_to_completed(selected_id, visit_date, visit_notes)
-                    except Exception as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state.pop('selected_biennale_job', None)
-                        st.success('Visita biennale registrata; esito in attesa del verbale.')
-                        st.rerun()
-                if b2.button('Annulla visita', use_container_width=True):
-                    st.session_state.pop('selected_biennale_job', None)
-                    st.rerun()
     if f.empty: st.info('Nessuna manutenzione con i filtri selezionati.')
     else:
         order={'SCADUTA':0,'DA FARE':1,'DA NON FARE':2,'NON AVVIATA':3,'ESEGUITA':4}
@@ -1488,6 +1459,24 @@ else:
                         if st.button('REGISTRA VISITA BIENNALE', key='biennale_'+str(r['id']), use_container_width=True):
                             st.session_state.selected_biennale_job = int(r['id'])
                             st.rerun()
+                        if st.session_state.get('selected_biennale_job') == int(r['id']):
+                            st.info('Visita biennale successiva: compilare e confermare qui sotto.')
+                            with st.form(key='form_biennale_'+str(r['id'])):
+                                visit_date = st.date_input('Data effettiva della visita biennale', value=date.today())
+                                visit_notes = st.text_area('Osservazioni (facoltative)')
+                                confirm = st.form_submit_button('CONFERMA VISITA BIENNALE', type='primary')
+                                if confirm:
+                                    try:
+                                        add_biennale_to_completed(int(r['id']), visit_date, visit_notes)
+                                    except Exception as exc:
+                                        st.error(f'Impossibile registrare la biennale: {exc}')
+                                    else:
+                                        st.session_state.pop('selected_biennale_job', None)
+                                        st.success('Visita biennale registrata. Esito in attesa del verbale.')
+                                        st.rerun()
+                            if st.button('Annulla visita', key='cancel_biennale_'+str(r['id'])):
+                                st.session_state.pop('selected_biennale_job', None)
+                                st.rerun()
                     if bool(r.semestrale): c.caption('☑ Semestrale')
                     if bool(r.biennale): c.caption(f'☑ Biennale · Prossima: {r.scadenza_biennale}')
 
