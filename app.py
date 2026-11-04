@@ -194,7 +194,7 @@ def recover_partial_import(df):
     return len(missing_plans),len(missing_jobs),len(techs)
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_rows(table_name, cols='*', filters=()):
     # Cache letture; non memorizza credenziali o connessioni.
     return fetch_rows(table_name, cols, filters)
@@ -211,7 +211,7 @@ def fetch_rows(table_name, cols='*', filters=()):
         start+=step
     return rows
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def official_active():
     rows=fetch_rows('impianti','id,codice,note',(('codice','OFF-2026-00001'),))
     return bool(rows and '[ARCHIVIO_UFFICIALE_ATTIVO]' in (rows[0].get('note') or ''))
@@ -305,7 +305,7 @@ def generate_2027_from_2026():
     return len(missing_plans),len(missing_jobs),len(expected_jobs)
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=300, show_spinner=False)
 def dataset(year):
     jobs=pd.DataFrame(cached_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,biennale,scadenza_biennale,note',(('anno_competenza',year),)))
     imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato,progressivo,note'))
@@ -321,7 +321,7 @@ def dataset(year):
 # modifica ai 2.351 impianti, alle programmazioni o allo storico esistente.
 STATUS_TABLE = 'stati_impianti_v2'
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_status_overrides():
     return {int(x['impianto_id']): x for x in all_rows(STATUS_TABLE, '*')}
 
@@ -660,8 +660,14 @@ st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 # La generazione automatica resta disabilitata. Non svuotare le cache a ogni accesso.
-p=dataset(year); now=datetime.now()
-if p.empty and area!='📊 Amministratore': st.warning('Nessuna manutenzione disponibile. Chiedi all’amministratore di importare il file Excel.'); st.stop()
+# Modalità a basso traffico: nessun polling periodico. Aggiornamento esplicito.
+if st.sidebar.button('🔄 Aggiorna dati', key='refresh_manual', help='Ricarica le informazioni aggiornate da Supabase'):
+    invalidate_data()
+    st.rerun()
+st.sidebar.caption('Risparmio batteria: aggiornamento manuale; cache massima 5 minuti.')
+now=datetime.now()
+p=None
+
 
 if area=='📊 Amministratore':
     admin_password = st.secrets.get('ADMIN_PASSWORD')
@@ -672,6 +678,7 @@ if area=='📊 Amministratore':
     if entered != admin_password:
         st.info('Inserisci la password amministratore per accedere.')
         st.stop()
+    p=dataset(year)
     st.subheader('🗓️ Generazione controllata programmazione 2027')
     st.caption('Copia dal 2026 soltanto nel database di PROVA. S, N e ? restano invariati; nessuna modifica allo storico 2026. Se un lotto si interrompe, la procedura può essere ripetuta dopo i controlli.')
     confirm_2027 = st.checkbox('Confermo la generazione della programmazione 2027 SOLO nel database di PROVA', key='confirm_generate_2027')
@@ -1286,6 +1293,10 @@ if area=='📊 Amministratore':
     if overdue.empty: st.success('Nessuna manutenzione arretrata.')
     else: st.dataframe(overdue[['mese_nome','codice','cliente','indirizzo','comune','assegnato']],hide_index=True,use_container_width=True)
 else:
+    p=dataset(year)
+    if p.empty:
+        st.warning('Nessuna manutenzione disponibile per l’anno selezionato.')
+        st.stop()
     if year == 2026:
         st.info('2026 operativo: Cristian Malfatti da ottobre; gli altri tecnici da novembre. I mesi precedenti restano NON AVVIATA.')
     techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
