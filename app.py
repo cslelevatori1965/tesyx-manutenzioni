@@ -1323,27 +1323,33 @@ else:
     if p.empty:
         st.warning('Nessuna manutenzione disponibile per l’anno selezionato.')
         st.stop()
-    # Novembre 2026: fase pilota limitata alla vista del tecnico Cristian.
-    # Il filtro riguarda la UI; non costituisce autenticazione dell'utente.
+    # Novembre 2026: Cristian è l'unico utilizzatore pilota, ma può operare
+    # sulle manutenzioni assegnate anche a Benedetti e Barattini.
+    # Questo filtro di interfaccia NON è un controllo di accesso.
     pilot_november = date.today().year == 2026 and date.today().month == 11
+    def tech_matches(value, selected):
+        import unicodedata
+        def tokens(v):
+            v = unicodedata.normalize('NFKD', str(v or '')).casefold()
+            return set(''.join(ch if ch.isalnum() else ' ' for ch in v).split())
+        words = tokens(value)
+        target = {'Cristian Malfatti': {'cristian', 'malfatti'},
+                  'Sandro Benedetti': {'benedetti'},
+                  'Alessandro Barattini': {'barattini'}}
+        return target.get(selected, tokens(selected)).issubset(words)
     if pilot_november:
-        st.info('🧪 Novembre 2026: fase di prova con Cristian Malfatti. Gli altri tecnici non sono ancora abilitati all’uso operativo.')
-        techs=['Cristian Malfatti']
+        st.info('🧪 Novembre 2026: Cristian resta il tester. Può consultare e registrare anche le manutenzioni assegnate a Benedetti e Barattini.')
+        techs=['Cristian Malfatti', 'Sandro Benedetti', 'Alessandro Barattini']
     else:
         if year == 2026:
-            st.info('Storico 2026: Cristian Malfatti da ottobre; gli altri tecnici da novembre secondo la programmazione esistente.')
+            st.info('Storico 2026: consultazione secondo la programmazione esistente.')
         techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
     tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=0)
-    def is_cristian(value):
-        import unicodedata
-        value = unicodedata.normalize('NFKD', str(value or '')).casefold()
-        words = set(''.join(ch if ch.isalnum() else ' ' for ch in value).split())
-        return 'cristian' in words and 'malfatti' in words
     if pilot_november:
-        st.caption(f'Impianti programmati attribuiti a Cristian: {int(p.assegnato.map(is_cristian).sum())}')
+        st.caption(f'Impianti programmati attribuiti a {tech}: {int(p.assegnato.map(lambda x: tech_matches(x,tech)).sum())}')
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
-    if pilot_november: f=f[f.assegnato.map(is_cristian)]
+    if pilot_november: f=f[f.assegnato.map(lambda x: tech_matches(x,tech))]
     elif tech!='TUTTI': f=f[f.assegnato==tech]
     if stato!='TUTTI': f=f[f.stato_ui==stato]
     if mese!='TUTTI': f=f[f.mese_nome==mese]
@@ -1362,7 +1368,7 @@ else:
         rr=p[p['id']==st.session_state.selected_job]
         if (not rr.empty and int(rr.iloc[0]['anno_competenza']) == year
                 and rr.iloc[0]['stato_ui'] in ('DA FARE','SCADUTA')
-                and (not pilot_november or is_cristian(rr.iloc[0]['assegnato']))):
+                and (not pilot_november or tech_matches(rr.iloc[0]['assegnato'],tech))):
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
