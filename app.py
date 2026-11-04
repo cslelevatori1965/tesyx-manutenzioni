@@ -1297,11 +1297,17 @@ else:
     if p.empty:
         st.warning('Nessuna manutenzione disponibile per l’anno selezionato.')
         st.stop()
-    if year == 2026:
-        st.info('2026 operativo: Cristian Malfatti da ottobre; gli altri tecnici da novembre. I mesi precedenti restano NON AVVIATA.')
-    techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
-    cristian_idx = 0
-    tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=cristian_idx)
+    # Novembre 2026: fase pilota limitata alla vista del tecnico Cristian.
+    # Il filtro riguarda la UI; non costituisce autenticazione dell'utente.
+    pilot_november = date.today().year == 2026 and date.today().month == 11
+    if pilot_november:
+        st.info('🧪 Novembre 2026: fase di prova con Cristian Malfatti. Gli altri tecnici non sono ancora abilitati all’uso operativo.')
+        techs=['Cristian Malfatti']
+    else:
+        if year == 2026:
+            st.info('Storico 2026: Cristian Malfatti da ottobre; gli altri tecnici da novembre secondo la programmazione esistente.')
+        techs=['TUTTI']+sorted(p.assegnato.dropna().unique().tolist())
+    tech=st.sidebar.selectbox('Tecnico assegnatario',techs,index=0)
     stato=st.sidebar.selectbox('Stato',['TUTTI','SCADUTA','DA FARE','ESEGUITA','DA NON FARE','NON AVVIATA']); mese=st.sidebar.selectbox('Mese',['TUTTI']+[x[1] for x in MESI],index=(now.month if now.month<=12 else 0))
     f=p.copy()
     if tech!='TUTTI': f=f[f.assegnato==tech]
@@ -1320,7 +1326,9 @@ else:
         st.session_state.pop('selected_job', None)
     if date.today() >= date(year, 1, 1) and 'selected_job' in st.session_state:
         rr=p[p['id']==st.session_state.selected_job]
-        if not rr.empty and int(rr.iloc[0]['anno_competenza']) == year and rr.iloc[0]['stato_ui'] in ('DA FARE','SCADUTA'):
+        if (not rr.empty and int(rr.iloc[0]['anno_competenza']) == year
+                and rr.iloc[0]['stato_ui'] in ('DA FARE','SCADUTA')
+                and (not pilot_november or rr.iloc[0]['assegnato'] == 'Cristian Malfatti')):
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
