@@ -194,7 +194,7 @@ def recover_partial_import(df):
     return len(missing_plans),len(missing_jobs),len(techs)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def cached_rows(table_name, cols='*', filters=()):
     # Cache letture; non memorizza credenziali o connessioni.
     return fetch_rows(table_name, cols, filters)
@@ -211,7 +211,7 @@ def fetch_rows(table_name, cols='*', filters=()):
         start+=step
     return rows
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def official_active():
     rows=fetch_rows('impianti','id,codice,note',(('codice','OFF-2026-00001'),))
     return bool(rows and '[ARCHIVIO_UFFICIALE_ATTIVO]' in (rows[0].get('note') or ''))
@@ -305,7 +305,7 @@ def generate_2027_from_2026():
     return len(missing_plans),len(missing_jobs),len(expected_jobs)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def dataset(year):
     jobs=pd.DataFrame(cached_rows('manutenzioni','id,impianto_id,anno_competenza,mese_competenza,tecnico_assegnato,tecnico_esecutore,stato,eseguita_il,semestrale,biennale,scadenza_biennale,note',(('anno_competenza',year),)))
     imps=pd.DataFrame(all_rows('impianti','id,codice,matricola,cliente,indirizzo,comune,provincia,tecnico_assegnato,progressivo,note'))
@@ -321,7 +321,7 @@ def dataset(year):
 # modifica ai 2.351 impianti, alle programmazioni o allo storico esistente.
 STATUS_TABLE = 'stati_impianti_v2'
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def get_status_overrides():
     return {int(x['impianto_id']): x for x in all_rows(STATUS_TABLE, '*')}
 
@@ -726,11 +726,12 @@ st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
 # La generazione automatica resta disabilitata. Non svuotare le cache a ogni accesso.
-# Modalità a basso traffico: nessun polling periodico. Aggiornamento esplicito.
+# Modalità a basso traffico: nessun polling periodico e nessuna scadenza automatica delle cache operative.
+# Ogni salvataggio invalida le cache; per vedere le modifiche degli altri utenti premere Aggiorna dati.
 if st.sidebar.button('🔄 Aggiorna dati', key='refresh_manual', help='Ricarica le informazioni aggiornate da Supabase'):
     invalidate_data()
     st.rerun()
-st.sidebar.caption('Risparmio batteria: aggiornamento manuale; cache massima 5 minuti.')
+st.sidebar.caption('Modalità risparmio batteria: dati in memoria fino ad Aggiorna dati o a una registrazione.')
 now=datetime.now()
 p=None
 
@@ -1450,12 +1451,12 @@ else:
                 st.info(f'Giro geografico calcolato. Indirizzi senza posizione certa: {missing}. Questi sono collocati alla fine del giro.')
             else:
                 st.info('Premi «Calcola giro geografico» per ottenere la sequenza per vicinanza.')
-        # Navigazione leggibile: 50 visite per pagina come impostazione iniziale.
+        # Navigazione leggera: 25 visite per pagina come impostazione iniziale.
         # La scelta 'Tutte' consente di visualizzare l'intero giro senza paginazione.
         total_visits = len(f)
         nav_left, nav_right = st.columns([2, 3])
         with nav_left:
-            page_choice = st.selectbox('Manutenzioni da mostrare', ['50', '25', '100', 'Tutte'], key='visite_per_pagina')
+            page_choice = st.selectbox('Manutenzioni da mostrare', ['25', '50', '100', 'Tutte'], key='visite_per_pagina')
         page_size = total_visits if page_choice == 'Tutte' else int(page_choice)
         page_size = max(1, page_size)
         pages = max(1, (total_visits + page_size - 1) // page_size)
