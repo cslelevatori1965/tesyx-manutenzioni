@@ -217,9 +217,13 @@ def official_active():
     return bool(rows and '[ARCHIVIO_UFFICIALE_ATTIVO]' in (rows[0].get('note') or ''))
 
 def all_rows(table, cols='*'):
-    rows=cached_rows(table, cols)
-    if table=='impianti' and official_active():
-        return [r for r in rows if str(r.get('codice','')).startswith(('OFF-2026-', 'NEW-'))]
+    active = table == 'impianti' and official_active()
+    extra = active and cols != '*' and 'codice' not in [c.strip() for c in cols.split(',')]
+    rows = cached_rows(table, cols + ',codice' if extra else cols)
+    if active:
+        rows = [r for r in rows if str(r.get('codice','')).startswith(('OFF-2026-', 'NEW-'))]
+    if extra:
+        rows = [{k:v for k,v in r.items() if k != 'codice'} for r in rows]
     return rows
 
 def invalidate_data():
@@ -408,9 +412,20 @@ def street_sort_parts(address):
 def operators():
     x=all_rows('tecnici','nome,attivo'); return sorted([r['nome'] for r in x if r.get('attivo',True)])
 
+def preferred_operators(names, assigned):
+    # Riconosce anche Cognome Nome / Nome Cognome e differenze di maiuscole.
+    def norm(value):
+        return tuple(sorted(clean(value).casefold().split()))
+    names = list(names)
+    target = norm(assigned)
+    exact = next((n for n in names if clean(n).casefold() == clean(assigned).casefold()), None)
+    matches = [n for n in names if norm(n) == target]
+    preferred = exact or (matches[0] if len(matches) == 1 else None)
+    return ([preferred] + [n for n in names if n != preferred] if preferred else names), preferred
+
 def close_job(job_id, oper, dt, sem, biennale, note):
     # Controllo sulla manutenzione effettiva, senza limitare l'operativita al 2027.
-    rows = db().table('manutenzioni_v2').select('anno_competenza,mese_competenza').eq('id', int(job_id)).execute().data
+    rows = db().table('manutenzioni_v2').select('anno_competenza,mese_competenza,biennale,scadenza_biennale,note').eq('id', int(job_id)).execute().data
     if len(rows) != 1:
         raise ValueError('Manutenzione non trovata o duplicata.')
     year = int(rows[0]['anno_competenza'])
@@ -430,6 +445,10 @@ def close_job(job_id, oper, dt, sem, biennale, note):
         raise ValueError('Manutenzione precedente alla data di avvio del tecnico.')
     ts = datetime.combine(dt, datetime.now().time()).astimezone().isoformat()
     scadenza = (dt + relativedelta(months=24)).isoformat() if biennale else None
+    if rows[0].get('biennale') is True:
+        biennale = True
+        scadenza = rows[0].get('scadenza_biennale')
+        note = '\n'.join(dict.fromkeys(n for n in (clean(rows[0].get('note')), clean(note)) if n))
     db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).eq('stato','DA_FARE').execute()
     invalidate_data()
 
@@ -1264,10 +1283,15 @@ if area=='📊 Amministratore':
     st.markdown('### 📅 Scadenze biennali')
     # Scadenze da tutti gli anni, non soltanto dall'anno selezionato.
     biennali_jobs = pd.DataFrame(all_rows('manutenzioni','impianto_id,stato,biennale,scadenza_biennale'))
-    biennali = (biennali_jobs[(biennali_jobs['stato']=='ESEGUITA') & (biennali_jobs['biennale'].fillna(False).astype(bool)) & biennali_jobs['scadenza_biennale'].notna()].copy() if not biennali_jobs.empty else pd.DataFrame())
+    biennali = (biennali_jobs[(biennali_jobs['biennale'].fillna(False).astype(bool)) & biennali_jobs['scadenza_biennale'].notna()].copy() if not biennali_jobs.empty else pd.DataFrame())
     if not biennali.empty:
-        imps_b = pd.DataFrame(all_rows('impianti','id,progressivo,cliente,indirizzo,tecnico_assegnato'))
-        biennali = biennali.merge(imps_b,left_on='impianto_id',right_on='id',how='left').rename(columns={'tecnico_assegnato':'assegnato'})
+        cols_b = 'id,progressivo,cliente,indirizzo,tecnico_assegnato'
+        imps_b = pd.DataFrame(all_rows('impianti',cols_b), columns=cols_b.split(','))
+        if imps_b.empty:
+            st.warning('Archivio impianti non disponibile: premi Aggiorna dati. Le biennali restano salvate.')
+            biennali = biennali.iloc[0:0]
+        else:
+            biennali = biennali.merge(imps_b,left_on='impianto_id',right_on='id',how='inner').rename(columns={'tecnico_assegnato':'assegnato'})
     if biennali.empty:
         st.info('Nessuna manutenzione biennale registrata.')
     else:
@@ -1399,11 +1423,14 @@ else:
             r=rr.iloc[0]
             with st.container(border=True):
                 st.markdown(f"### Manutenzione — {r['indirizzo']}"); st.write(f"**{r['cliente']}** · {r['comune']}"); st.caption(f"Competenza: {r['mese_nome']} {r['anno_competenza']} · Assegnato a: {r['assegnato']} · Cod. {r['codice']}")
-                cc1,cc2=st.columns(2); ops=operators(); default=ops.index(r['assegnato']) if r['assegnato'] in ops else 0; oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=default); data_exec=cc2.date_input('Data esecuzione',value=date.today())
+                cc1,cc2=st.columns(2)
+                ops, preferred = preferred_operators(operators(), r['assegnato'])
+                oper=cc1.selectbox('Tecnico che ha eseguito',ops,index=0 if preferred else None,placeholder='Seleziona tecnico',key=f"executor_v813_{int(r['id'])}")
+                data_exec=cc2.date_input('Data esecuzione',value=date.today())
                 sem=st.checkbox('Semestrale eseguita'); biennale=st.checkbox('Biennale eseguita'); nota=st.text_area('Note (facoltative)')
                 if biennale: st.info(f'Prossima scadenza biennale: {(data_exec + relativedelta(months=24)).strftime("%d/%m/%Y")}')
                 b1,b2=st.columns([3,1])
-                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True):
+                if b1.button('CONFERMA MANUTENZIONE',type='primary',use_container_width=True,disabled=not oper):
                     try:
                         close_job(r['id'],oper,data_exec,sem,biennale,nota)
                     except Exception as exc: st.error(str(exc))
