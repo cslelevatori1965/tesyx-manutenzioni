@@ -741,6 +741,34 @@ def make_audit_excel(frame):
         frame.to_excel(writer, index=False, sheet_name='Controllo')
     return buffer.getvalue()
 
+
+def export_complete_excel(dataframes):
+    """Excel multi-foglio in sola lettura, con filtri e intestazioni."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    output=io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet, frame in dataframes.items():
+            safe=frame.copy()
+            # Conserva valori complessi come JSON leggibile.
+            for col in safe.columns:
+                safe[col]=safe[col].map(lambda x: json.dumps(x,ensure_ascii=False,default=str)
+                                       if isinstance(x,(dict,list)) else x)
+            safe.to_excel(writer,index=False,sheet_name=sheet[:31])
+            ws=writer.sheets[sheet[:31]]
+            ws.freeze_panes='A2'
+            if ws.max_column and ws.max_row:
+                ws.auto_filter.ref=ws.dimensions
+            for cell in ws[1]:
+                cell.font=Font(bold=True,color='FFFFFF')
+                cell.fill=PatternFill('solid',fgColor='17365D')
+                cell.alignment=Alignment(wrap_text=True)
+            for col_idx in range(1,ws.max_column+1):
+                col_letter=get_column_letter(col_idx)
+                values=[str(ws.cell(r,col_idx).value or '') for r in range(1,min(ws.max_row,100)+1)]
+                ws.column_dimensions[col_letter].width=min(55,max(13,max(map(len,values),default=12)+2))
+    return output.getvalue()
+
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
 year=st.sidebar.selectbox('Anno',[2026,2027],index=0)
@@ -765,6 +793,88 @@ if area=='📊 Amministratore':
         st.info('Inserisci la password amministratore per accedere.')
         st.stop()
     p=dataset(year)
+    with st.expander('📥 ESPORTAZIONE COMPLETA DATI — EXCEL', expanded=False):
+        st.caption('Esporta tutte le colonne originali delle tabelle, inclusi identificativi, note, date, '
+                   'stati e storico. I filtri sono applicati alle manutenzioni e agli impianti collegati. '
+                   'Nessuna modifica al database.')
+        export_mode=st.radio('Tipo esportazione',
+                             ['Archivio completo (senza filtri)','Esportazione filtrata'],
+                             key='export_mode',horizontal=True)
+        exp_year=st.selectbox('Anno manutenzioni',['Tutti',2026,2027],key='exp_year')
+        exp_tech=st.selectbox('Tecnico',['Tutti']+operators(),key='exp_tech')
+        exp_state=st.selectbox('Stato',['Tutti','DA_FARE','ESEGUITA'],key='exp_state')
+        exp_month=st.selectbox('Mese',['Tutti']+list(range(1,13)),
+                               format_func=lambda x:'Tutti' if x=='Tutti' else MESI[x-1][1],
+                               key='exp_month')
+        exp_search=st.text_input('Cerca impianto (cliente, codice, matricola, indirizzo, comune)',
+                                  key='exp_search')
+        if st.button('📦 Prepara file Excel',key='prepare_full_export'):
+            try:
+                with st.spinner('Lettura completa dei dati da Supabase...'):
+                    names={'Impianti':'impianti','Programmazione':'programmazione',
+                           'Manutenzioni':'manutenzioni','Tecnici':'tecnici',
+                           'Stati impianti':STATUS_TABLE,
+                           'Storico annullamenti':'storico_annullamenti',
+                           'Storico programmazione':'storico_programmazione_v2'}
+                    frames={}
+                    warnings=[]
+                    for label,table_name in names.items():
+                        try:
+                            frames[label]=pd.DataFrame(fetch_rows(table_name,'*'))
+                        except Exception as exc:
+                            warnings.append(f'{label}: {exc}')
+                    if not frames:
+                        raise ValueError('Nessuna tabella disponibile.')
+                    if export_mode=='Esportazione filtrata':
+                        plants=frames.get('Impianti',pd.DataFrame())
+                        jobs=frames.get('Manutenzioni',pd.DataFrame())
+                        if not plants.empty:
+                            mask=pd.Series(True,index=plants.index)
+                            if exp_search:
+                                search_cols=[c for c in ['cliente','codice','matricola','indirizzo','comune'] if c in plants]
+                                mask &= plants[search_cols].fillna('').astype(str).apply(
+                                    lambda col:col.str.contains(exp_search,case=False,regex=False)).any(axis=1)
+                            if exp_tech!='Tutti' and 'tecnico_assegnato' in plants:
+                                mask &= plants['tecnico_assegnato'].fillna('').eq(exp_tech)
+                            plants=plants[mask]
+                            plant_ids=set(plants['id'].tolist())
+                        else:
+                            plant_ids=set()
+                        if not jobs.empty:
+                            mask=jobs['impianto_id'].isin(plant_ids)
+                            if exp_year!='Tutti': mask &= jobs['anno_competenza'].eq(exp_year)
+                            if exp_month!='Tutti': mask &= jobs['mese_competenza'].eq(exp_month)
+                            if exp_state!='Tutti': mask &= jobs['stato'].eq(exp_state)
+                            if exp_tech!='Tutti':
+                                mask &= jobs['tecnico_assegnato'].fillna('').eq(exp_tech)
+                            jobs=jobs[mask]
+                            plant_ids=set(jobs['impianto_id'].tolist())
+                        frames['Manutenzioni']=jobs
+                        if not plants.empty:
+                            frames['Impianti']=plants[plants['id'].isin(plant_ids)]
+                        for name in ['Programmazione','Stati impianti','Storico programmazione']:
+                            if name in frames and 'impianto_id' in frames[name]:
+                                frames[name]=frames[name][frames[name]['impianto_id'].isin(plant_ids)]
+                        if 'Storico annullamenti' in frames and 'manutenzione_id' in frames['Storico annullamenti']:
+                            job_ids=set(jobs['id'].tolist()) if not jobs.empty else set()
+                            frames['Storico annullamenti']=frames['Storico annullamenti'][
+                                frames['Storico annullamenti']['manutenzione_id'].isin(job_ids)]
+                    # Includi anche il riepilogo dei record per foglio.
+                    frames={'Indice':pd.DataFrame([{'Archivio':k,'Righe':len(v)} for k,v in frames.items()]),
+                            **frames}
+                    st.session_state['full_export_bytes']=export_complete_excel(frames)
+                    st.session_state['full_export_warnings']=warnings
+                    st.session_state['full_export_name']='ascensori_servizi_esportazione_'+date.today().isoformat()+'.xlsx'
+            except Exception as exc:
+                st.error(f'Esportazione non riuscita: {exc}')
+        if st.session_state.get('full_export_bytes'):
+            st.download_button('⬇️ SCARICA EXCEL COMPLETO',
+                data=st.session_state['full_export_bytes'],
+                file_name=st.session_state['full_export_name'],
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key='download_full_export')
+            for warning in st.session_state.get('full_export_warnings',[]):
+                st.warning('Tabella non inclusa: '+warning)
     # Dashboard in sola lettura: nessuna modifica alle manutenzioni o alle assegnazioni.
     with st.expander('📊 CARICHI DI LAVORO MENSILI — TECNICI', expanded=False):
         st.caption('Confronto mensile basato sulle manutenzioni effettivamente presenti nel database. '
