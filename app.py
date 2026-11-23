@@ -765,6 +765,76 @@ if area=='📊 Amministratore':
         st.info('Inserisci la password amministratore per accedere.')
         st.stop()
     p=dataset(year)
+    # Dashboard in sola lettura: nessuna modifica alle manutenzioni o alle assegnazioni.
+    with st.expander('📊 CARICHI DI LAVORO MENSILI — TECNICI', expanded=False):
+        st.caption('Confronto mensile basato sulle manutenzioni effettivamente presenti nel database. '
+                   'Sono escluse le visite NON AVVIATE e DA NON FARE. Le biennali non sono aggiunte '
+                   'come nuove visite: il relativo flag indica una visita già registrata.')
+        if p is None or p.empty:
+            st.info('Non risultano manutenzioni per l’anno selezionato.')
+        else:
+            work=p[p['stato_ui'].isin(['DA FARE','SCADUTA','ESEGUITA'])].copy()
+            work['Tecnico']=work['assegnato'].fillna('Non assegnato').astype(str).str.strip().replace('', 'Non assegnato')
+            names=sorted(work['Tecnico'].unique().tolist())
+            selected=st.multiselect('Tecnici da confrontare', names, default=names, key=f'workload_tech_{year}')
+            statuses=st.multiselect('Stati da includere', ['DA FARE','SCADUTA','ESEGUITA'],
+                                    default=['DA FARE','SCADUTA','ESEGUITA'],key=f'workload_status_{year}')
+            work=work[work['Tecnico'].isin(selected) & work['stato_ui'].isin(statuses)]
+            hour_visit=st.number_input('Minuti stimati per visita (modificabili per la simulazione)',
+                                       min_value=10,max_value=240,value=50,step=5,key=f'workload_minutes_{year}')
+            travel_pct=st.number_input('Maggiorazione spostamenti (%)',min_value=0,max_value=100,
+                                       value=10,step=5,key=f'workload_travel_{year}')
+            if work.empty:
+                st.info('Nessuna manutenzione corrisponde ai filtri.')
+            else:
+                month_names={m:label for _,label,m in MESI}
+                counts=work.groupby(['Tecnico','mese_competenza']).size().unstack(fill_value=0)
+                counts=counts.reindex(index=selected,columns=list(range(1,13)),fill_value=0)
+                counts.columns=[month_names[m] for m in counts.columns]
+                counts['Totale']=counts.sum(axis=1)
+                hours=counts.copy()
+                for col in hours.columns:
+                    hours[col]=(hours[col]*hour_visit*(1+travel_pct/100)/60).round(1)
+                st.markdown('**Manutenzioni per tecnico e mese**')
+                st.dataframe(counts, use_container_width=True)
+                st.markdown('**Ore stimate per tecnico e mese**')
+                st.dataframe(hours, use_container_width=True)
+                monthly=work.groupby('mese_competenza').size().reindex(range(1,13),fill_value=0)
+                st.bar_chart(pd.DataFrame({'Visite':monthly.values},index=[month_names[m] for m in range(1,13)]))
+                total=len(work)
+                done=int((work['stato_ui']=='ESEGUITA').sum())
+                todo=int((work['stato_ui']=='DA FARE').sum())
+                overdue=int((work['stato_ui']=='SCADUTA').sum())
+                a,b,c,d=st.columns(4)
+                a.metric('Visite incluse',total)
+                b.metric('Eseguite',done)
+                c.metric('Da fare',todo)
+                d.metric('Scadute',overdue)
+                st.caption('Ore indicative: non sono ore effettivamente registrate; la stessa durata è applicata a ogni visita.')
+                detail_month=st.selectbox('Apri il dettaglio del mese',
+                                          list(range(1,13)),format_func=lambda m:month_names[m],
+                                          key=f'workload_month_{year}')
+                detail_tech=st.selectbox('Tecnico per il dettaglio',['Tutti']+selected,
+                                         key=f'workload_detail_tech_{year}')
+                detail=work[work['mese_competenza']==detail_month].copy()
+                if detail_tech!='Tutti':
+                    detail=detail[detail['Tecnico']==detail_tech]
+                fields=['Tecnico','codice','matricola','cliente','indirizzo','comune','stato_ui']
+                labels=['Tecnico','Codice','Matricola','Cliente','Indirizzo','Comune','Stato']
+                st.write(f'**{len(detail)} visite** nel mese selezionato')
+                st.dataframe(detail[fields].rename(columns=dict(zip(fields,labels))),
+                             hide_index=True,use_container_width=True)
+                report=counts.reset_index().rename(columns={'Tecnico':'Tecnico'})
+                buff=io.BytesIO()
+                with pd.ExcelWriter(buff,engine='openpyxl') as writer:
+                    report.to_excel(writer,index=False,sheet_name='Visite per mese')
+                    hours.reset_index().to_excel(writer,index=False,sheet_name='Ore stimate')
+                    detail[fields].rename(columns=dict(zip(fields,labels))).to_excel(
+                        writer,index=False,sheet_name='Dettaglio mese')
+                st.download_button('⬇️ Esporta carichi di lavoro Excel',data=buff.getvalue(),
+                                   file_name=f'carichi_lavoro_{year}.xlsx',
+                                   mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                   key=f'workload_excel_{year}')
     st.subheader('🗓️ Generazione controllata programmazione 2027')
     st.caption('Copia dal 2026 soltanto nel database di PROVA. S, N e ? restano invariati; nessuna modifica allo storico 2026. Se un lotto si interrompe, la procedura può essere ripetuta dopo i controlli.')
     confirm_2027 = st.checkbox('Confermo la generazione della programmazione 2027 SOLO nel database di PROVA', key='confirm_generate_2027')
