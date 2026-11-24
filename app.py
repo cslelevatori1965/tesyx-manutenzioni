@@ -823,7 +823,26 @@ def drive_test_panel():
     st.success('Autorizzazione Google ottenuta. Ora seleziona la cartella esistente.')
     if st.checkbox('Apri selettore cartella Google',key='drive_picker_open'):
         settings=json.dumps({'token':token,'key':str(cfg['api_key']),'app':str(cfg['client_id']).split('-')[0],'origin':str(cfg['redirect_uri']).rstrip('/')}).replace('<','\\u003c')
-        components.html('''<button id="pick" disabled>Seleziona cartella</button><p id="msg"></p><script src="https://apis.google.com/js/api.js"></script><script>const c='''+settings+''';gapi.load('picker',()=>{document.getElementById('pick').disabled=false;});document.getElementById('pick').onclick=()=>{try{const v=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true);new google.picker.PickerBuilder().addView(v).setOAuthToken(c.token).setDeveloperKey(c.key).setAppId(c.app).setOrigin(c.origin).setCallback(d=>{if(d.action===google.picker.Action.PICKED)document.getElementById('msg').textContent='Cartella selezionata. Premi Verifica accesso nel gestionale.';}).build().setVisible(true);}catch(e){document.getElementById('msg').textContent='Impossibile aprire il selettore.';}};</script>''',height=100)
+        components.html('''<button id="pick" disabled>Seleziona cartella</button>
+<p id="msg" role="status">Caricamento Google Picker...</p>
+<script>
+const c='''+settings+''';
+const msg=document.getElementById('msg');
+const btn=document.getElementById('pick');
+function fail(t){msg.textContent=t;}
+function initPicker(){
+ gapi.load('picker',{callback:()=>{btn.disabled=false;msg.textContent='Selettore pronto.';},onerror:()=>fail('Errore caricamento modulo Picker.'),timeout:15000,ontimeout:()=>fail('Tempo di caricamento Picker scaduto.')});
+}
+btn.onclick=()=>{try{
+ msg.textContent='Apertura selettore...';
+ const v=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true);
+ new google.picker.PickerBuilder().addView(v).setOAuthToken(c.token).setDeveloperKey(c.key).setAppId(c.app).setOrigin(c.origin).setSize(780,520).setCallback(d=>{
+ if(d.action===google.picker.Action.PICKED){msg.textContent='Cartella selezionata: '+(d.docs?.[0]?.name||'')+'. Premi Verifica accesso alla cartella.';}
+ else if(d.action===google.picker.Action.CANCEL){msg.textContent='Selezione annullata.';}
+ else if(d.action==='error'){fail('Google Picker ha restituito un errore.');}
+ }).build().setVisible(true);
+ }catch(e){fail('Impossibile aprire il selettore ('+(e.name||'errore')+').');}};
+</script><script src="https://apis.google.com/js/api.js" onload="initPicker()" onerror="fail('Impossibile caricare Google API.')"></script>''',height=650,scrolling=True)
     if st.button('Verifica accesso alla cartella',key='drive_verify'):
         try:
             info=request_json('https://www.googleapis.com/drive/v3/files/'+quote(str(cfg['folder_id']),safe='')+'?fields=id,name,mimeType,capabilities(canAddChildren),trashed',token=token)
