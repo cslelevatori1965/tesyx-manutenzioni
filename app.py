@@ -41,8 +41,8 @@ def db():
     key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_SERVICE_KEY")
     if not url or not key:
         raise RuntimeError("Mancano SUPABASE_URL o SUPABASE_KEY nei Secrets di Streamlit.")
-    if str(url).rstrip("/") != "https://ysbcbafaoubeojcnpmcc.supabase.co":
-        raise RuntimeError("BLOCCO DI SICUREZZA: questa versione può collegarsi solo al Supabase di prova.")
+    if str(url).rstrip("/") != "https://bccexizxccaymwpgzsru.supabase.co":
+        raise RuntimeError("BLOCCO DI SICUREZZA: questa versione può collegarsi solo al progetto tesyx-manutenzioni autorizzato.")
     return create_client(url, key)
 
 def clean(v):
