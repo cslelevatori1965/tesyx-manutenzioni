@@ -771,14 +771,6 @@ def make_audit_excel(frame):
     return buffer.getvalue()
 
 st.title('🛠️ Ascensori Servizi & Tesyx')
-access_password = str(st.secrets.get('TECH_PASSWORD') or st.secrets.get('ADMIN_PASSWORD') or '')
-if not access_password:
-    st.error('Configurare ADMIN_PASSWORD nei Secrets.')
-    st.stop()
-entered_access = st.sidebar.text_input('Password accesso gestionale', type='password', key='access_password')
-if not (hmac.compare_digest(entered_access.encode(), access_password.encode()) or hmac.compare_digest(entered_access.encode(), str(st.secrets.get('ADMIN_PASSWORD') or access_password).encode())):
-    st.info('Inserisci la password di accesso.')
-    st.stop()
 @st.cache_resource
 def check_connection():
     client = db()
