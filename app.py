@@ -770,90 +770,6 @@ def export_complete_excel(dataframes):
     return output.getvalue()
 
 
-def drive_test_panel():
-    import secrets as sec
-    import threading
-    import streamlit.components.v1 as components
-    from urllib.error import HTTPError
-    from urllib.parse import quote
-    @st.cache_resource
-    def pending_states():
-        return {}, threading.Lock()
-    cfg=st.secrets.get('google_drive', {})
-    required=('client_id','client_secret','redirect_uri','folder_id','api_key')
-    if not all(cfg.get(k) for k in required):
-        st.warning('Configurazione Google Drive incompleta nei Secrets.')
-        return
-    states, lock=pending_states()
-    def request_json(url, data=None, token=None, content_type=None):
-        headers={'Accept':'application/json'}
-        if token: headers['Authorization']='Bearer '+token
-        if content_type: headers['Content-Type']=content_type
-        with urlopen(Request(url,data=data,headers=headers),timeout=30) as response:
-            return json.load(response)
-    if st.query_params.get('code') or st.query_params.get('error'):
-        code=st.query_params.get('code'); state=st.query_params.get('state','')
-        st.query_params.clear()
-        with lock: pending=states.pop(state,None)
-        if not code or not pending or time.time()-pending[0]>600:
-            st.warning('Autorizzazione scaduta o non valida. Ripeti il collegamento.')
-        else:
-            try:
-                result=request_json('https://oauth2.googleapis.com/token',urlencode({'code':code,'client_id':cfg['client_id'],'client_secret':cfg['client_secret'],'redirect_uri':cfg['redirect_uri'],'grant_type':'authorization_code','code_verifier':pending[1]}).encode(),content_type='application/x-www-form-urlencoded')
-                st.session_state['drive_test_token']=result['access_token']
-                st.session_state['drive_test_expiry']=time.time()+int(result.get('expires_in',3600))-60
-            except Exception:
-                st.error('Scambio autorizzazione non riuscito. Ripeti il collegamento.')
-    token=st.session_state.get('drive_test_token')
-    if not token or time.time()>=st.session_state.get('drive_test_expiry',0):
-        st.session_state.pop('drive_test_token',None)
-        import base64
-        state=sec.token_urlsafe(32); verifier=sec.token_urlsafe(64)
-        challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        with lock:
-            for k in list(states):
-                if time.time()-states[k][0]>600: states.pop(k,None)
-            states[state]=(time.time(),verifier)
-        url='https://accounts.google.com/o/oauth2/v2/auth?'+urlencode({'client_id':cfg['client_id'],'redirect_uri':cfg['redirect_uri'],'response_type':'code','scope':'https://www.googleapis.com/auth/drive.file','state':state,'code_challenge':challenge,'code_challenge_method':'S256','prompt':'select_account consent'})
-        st.link_button('Autorizza Google Drive',url)
-        st.caption('Al ritorno seleziona Amministratore e inserisci nuovamente la password. Autorizzazione temporanea di collaudo.')
-        return
-    if st.button('Disconnetti sessione Drive',key='drive_disconnect'):
-        st.session_state.pop('drive_test_token',None); st.session_state.pop('drive_test_expiry',None); st.rerun()
-    st.success('Autorizzazione Google ottenuta. Ora seleziona la cartella esistente.')
-    if st.checkbox('Apri selettore cartella Google',key='drive_picker_open'):
-        settings=json.dumps({'token':token,'key':str(cfg['api_key']),'app':str(cfg['client_id']).split('-')[0],'origin':str(cfg['redirect_uri']).rstrip('/')}).replace('<','\\u003c')
-        components.html('''<button id="pick" disabled>Seleziona cartella</button>
-<p id="msg" role="status">Caricamento Google Picker...</p>
-<script>
-const c='''+settings+''';
-const msg=document.getElementById('msg');
-const btn=document.getElementById('pick');
-function fail(t){msg.textContent=t;}
-function initPicker(){
- gapi.load('picker',{callback:()=>{btn.disabled=false;msg.textContent='Selettore pronto.';},onerror:()=>fail('Errore caricamento modulo Picker.'),timeout:15000,ontimeout:()=>fail('Tempo di caricamento Picker scaduto.')});
-}
-btn.onclick=()=>{try{
- msg.textContent='Apertura selettore...';
- const v=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true);
- new google.picker.PickerBuilder().addView(v).setOAuthToken(c.token).setDeveloperKey(c.key).setAppId(c.app).setOrigin(c.origin).setSize(780,520).setCallback(d=>{
- if(d.action===google.picker.Action.PICKED){msg.textContent='Cartella selezionata: '+(d.docs?.[0]?.name||'')+'. Premi Verifica accesso alla cartella.';}
- else if(d.action===google.picker.Action.CANCEL){msg.textContent='Selezione annullata.';}
- else if(d.action==='error'){fail('Google Picker ha restituito un errore.');}
- }).build().setVisible(true);
- }catch(e){fail('Impossibile aprire il selettore ('+(e.name||'errore')+').');}};
-</script><script src="https://apis.google.com/js/api.js" onload="initPicker()" onerror="fail('Impossibile caricare Google API.')"></script>''',height=650,scrolling=True)
-    if st.button('Verifica accesso alla cartella',key='drive_verify'):
-        try:
-            info=request_json('https://www.googleapis.com/drive/v3/files/'+quote(str(cfg['folder_id']),safe='')+'?fields=id,name,mimeType,capabilities(canAddChildren),trashed',token=token)
-            if info.get('mimeType')!='application/vnd.google-apps.folder' or info.get('trashed') or not info.get('capabilities',{}).get('canAddChildren'):
-                st.warning('Cartella non utilizzabile per il caricamento.')
-            else: st.success('Cartella verificata: '+info['name']+' — scrittura consentita.')
-        except HTTPError as exc:
-            st.warning(f'Accesso non confermato (HTTP {exc.code}). Seleziona la cartella corretta nel Picker.')
-        except Exception:
-            st.error('Verifica non riuscita. Riprova.')
-    st.caption('Questa versione verifica soltanto il collegamento: nessun file viene creato o modificato.')
 
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
@@ -878,8 +794,6 @@ if area=='📊 Amministratore':
     if entered != admin_password:
         st.info('Inserisci la password amministratore per accedere.')
         st.stop()
-    with st.expander('📷 Archivio fotografico – Google Drive (collaudo)', expanded=False):
-        drive_test_panel()
     p=dataset(year)
     with st.expander('📥 ESPORTAZIONE COMPLETA DATI — EXCEL', expanded=False):
         st.caption('Esporta tutte le colonne originali delle tabelle, inclusi identificativi, note, date, '
