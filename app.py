@@ -29,7 +29,7 @@ MESI=[('Gen','Gennaio',1),('feb','Febbraio',2),('mar','Marzo',3),('apr','Aprile'
 XLS='impianti.xlsx'
 
 # Nuovo archivio indipendente dal precedente
-TABLES = {'impianti':'impianti_v2','programmazione':'programmazione_v2','manutenzioni':'manutenzioni_v2','storico_annullamenti':'storico_annullamenti_v2','tecnici':'tecnici_v2'}
+TABLES = {'impianti':'impianti_v4','programmazione':'programmazione_v4','manutenzioni':'manutenzioni_v4','storico_annullamenti':'storico_annullamenti_v4','tecnici':'tecnici_v4'}
 
 def table(name):
     return TABLES.get(name, name)
@@ -91,7 +91,7 @@ def import_frame(upload):
 def import_new_archive(df):
     """Importazione nel SOLO database di prova; ? salvato come NULL, mai come N."""
     client = db()  # il controllo URL blocca ogni altro progetto
-    count = client.table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
+    count = client.table('impianti_v4').select('id',count='exact').limit(1).execute().count or 0
     if count:
         raise ValueError('Archivio già popolato: importazione bloccata. Non vengono cancellati dati.')
     month_excel = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
@@ -116,7 +116,7 @@ def import_new_archive(df):
           'note':' | '.join(notes)})
     # ATTENZIONE: inserimento in lotti, non transazionale. In caso di errore fermarsi.
     for i in range(0,len(records),150):
-        client.table('impianti_v2').insert(records[i:i+150]).execute()
+        client.table('impianti_v4').insert(records[i:i+150]).execute()
     invalidate_data()
     id_map={r['codice']:r['id'] for r in all_rows('impianti','id,codice')}
     plans=[]; jobs=[]
@@ -131,12 +131,12 @@ def import_new_archive(df):
                              'tecnico_assegnato':rec['tecnico_assegnato'],'stato':'DA_FARE'})
         plans.append(plan)
     for i in range(0,len(plans),150):
-        client.table('programmazione_v2').insert(plans[i:i+150]).execute()
+        client.table('programmazione_v4').insert(plans[i:i+150]).execute()
     for i in range(0,len(jobs),150):
-        client.table('manutenzioni_v2').insert(jobs[i:i+150]).execute()
+        client.table('manutenzioni_v4').insert(jobs[i:i+150]).execute()
     names=sorted(set(r['tecnico_assegnato'] for r in records if r['tecnico_assegnato']!='Non assegnato'))
     for name in names:
-        client.table('tecnici_v2').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
+        client.table('tecnici_v4').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
     invalidate_data()
     return len(records),len(jobs),len(names)
 
@@ -184,12 +184,12 @@ def recover_partial_import(df):
     missing_plans=[r for r in plans if r['impianto_id'] not in existing_plan_ids]
     missing_jobs=[r for r in jobs if (r['impianto_id'],r['anno_competenza'],r['mese_competenza']) not in existing_jobs]
     for i in range(0,len(missing_plans),100):
-        client.table('programmazione_v2').insert(missing_plans[i:i+100]).execute()
+        client.table('programmazione_v4').insert(missing_plans[i:i+100]).execute()
     for i in range(0,len(missing_jobs),100):
-        client.table('manutenzioni_v2').insert(missing_jobs[i:i+100]).execute()
+        client.table('manutenzioni_v4').insert(missing_jobs[i:i+100]).execute()
     techs=sorted({r['tecnico_assegnato'] for r in plants if r.get('tecnico_assegnato') and r['tecnico_assegnato']!='Non assegnato'})
     for name in techs:
-        client.table('tecnici_v2').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
+        client.table('tecnici_v4').upsert({'nome':name,'attivo':True},on_conflict='nome').execute()
     invalidate_data()
     return len(missing_plans),len(missing_jobs),len(techs)
 
@@ -205,7 +205,7 @@ def fetch_rows(table_name, cols='*', filters=()):
         query=s.table(globals()['table'](table_name)).select(cols)
         for column, value in filters:
             query=query.eq(column, value)
-        r=query.range(start,start+step-1).execute().data
+        r=query.order("id" if table_name != STATUS_TABLE else "impianto_id").range(start,start+step-1).execute().data
         rows.extend(r)
         if len(r)<step: break
         start+=step
@@ -250,7 +250,7 @@ def ensure_jobs(year):
                 x={'impianto_id':int(r.impianto_id),'anno':year}
                 for name,_,_ in MESI: x[name.lower()]=r[name.lower()]
                 vals.append(x)
-            for i in range(0,len(vals),200): s.table('programmazione_v2').insert(vals[i:i+200]).execute()
+            for i in range(0,len(vals),200): s.table('programmazione_v4').insert(vals[i:i+200]).execute()
             prs=pd.DataFrame(all_rows('programmazione','*'))
     existing={(x['impianto_id'],x['anno_competenza'],x['mese_competenza']) for x in all_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza')}
     vals=[]
@@ -260,7 +260,7 @@ def ensure_jobs(year):
         for name,_,num in MESI:
             if r[name.lower()] is True and (int(r.impianto_id),year,num) not in existing:
                 vals.append({'impianto_id':int(r.impianto_id),'anno_competenza':year,'mese_competenza':num,'tecnico_assegnato':tech,'stato':'DA_FARE'})
-    for i in range(0,len(vals),200): s.table('manutenzioni_v2').insert(vals[i:i+200]).execute()
+    for i in range(0,len(vals),200): s.table('manutenzioni_v4').insert(vals[i:i+200]).execute()
 
 def generate_2027_from_2026():
     """Ripresa controllata 2027 sul solo Supabase di prova.
@@ -275,8 +275,8 @@ def generate_2027_from_2026():
     target = fetch_rows('programmazione', 'impianto_id,anno,' + ','.join(keys), (('anno',2027),))
     jobs_2027 = fetch_rows('manutenzioni', 'impianto_id,anno_competenza,mese_competenza,stato', (('anno_competenza',2027),))
     plant_ids = {int(p['id']) for p in plants}
-    if not plant_ids or len(plant_ids) != 2547:
-        raise ValueError(f'Attesi 2547 impianti di prova; trovati {len(plant_ids)}. Operazione bloccata.')
+    if not plant_ids:
+        raise ValueError(f'Nessun impianto trovato. Operazione bloccata.')
     source_by_id = {int(r['impianto_id']):r for r in source}
     if len(source_by_id) != len(source) or set(source_by_id) != plant_ids:
         raise ValueError('Programmazione 2026 incompleta, duplicata o non corrispondente agli impianti: operazione bloccata.')
@@ -302,9 +302,9 @@ def generate_2027_from_2026():
                     for iid,month in sorted(expected_jobs - existing_jobs)]
     # Preflight completato: solo INSERT, mai UPDATE/DELETE.
     for start in range(0,len(missing_plans),100):
-        client.table('programmazione_v2').insert(missing_plans[start:start+100]).execute()
+        client.table('programmazione_v4').insert(missing_plans[start:start+100]).execute()
     for start in range(0,len(missing_jobs),100):
-        client.table('manutenzioni_v2').insert(missing_jobs[start:start+100]).execute()
+        client.table('manutenzioni_v4').insert(missing_jobs[start:start+100]).execute()
     invalidate_data()
     return len(missing_plans),len(missing_jobs),len(expected_jobs)
 
@@ -323,7 +323,7 @@ def dataset(year):
 
 # Lo stato e le date di riattivazione sono in una tabella separata: nessuna
 # modifica ai 2.351 impianti, alle programmazioni o allo storico esistente.
-STATUS_TABLE = 'stati_impianti_v2'
+STATUS_TABLE = 'stati_impianti_v4'
 
 @st.cache_data(show_spinner=False)
 def get_status_overrides():
@@ -425,7 +425,7 @@ def preferred_operators(names, assigned):
 
 def close_job(job_id, oper, dt, sem, biennale, note):
     # Controllo sulla manutenzione effettiva, senza limitare l'operativita al 2027.
-    rows = db().table('manutenzioni_v2').select('anno_competenza,mese_competenza,biennale,scadenza_biennale,note').eq('id', int(job_id)).execute().data
+    rows = db().table('manutenzioni_v4').select('anno_competenza,mese_competenza,biennale,scadenza_biennale,note').eq('id', int(job_id)).execute().data
     if len(rows) != 1:
         raise ValueError('Manutenzione non trovata o duplicata.')
     year = int(rows[0]['anno_competenza'])
@@ -449,12 +449,12 @@ def close_job(job_id, oper, dt, sem, biennale, note):
         biennale = True
         scadenza = rows[0].get('scadenza_biennale')
         note = '\n'.join(dict.fromkeys(n for n in (clean(rows[0].get('note')), clean(note)) if n))
-    db().table('manutenzioni_v2').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).eq('stato','DA_FARE').execute()
+    db().table('manutenzioni_v4').update({'stato':'ESEGUITA','tecnico_esecutore':oper,'eseguita_il':ts,'semestrale':bool(sem),'biennale':bool(biennale),'scadenza_biennale':scadenza,'note':note}).eq('id',int(job_id)).eq('stato','DA_FARE').execute()
     invalidate_data()
 
 def add_biennale_to_completed(job_id, visit_date, note_extra=''):
     """Aggiunge una visita biennale successiva senza riaprire la manutenzione."""
-    rows = db().table('manutenzioni_v2').select('id,stato,biennale,note,eseguita_il').eq('id', int(job_id)).execute().data
+    rows = db().table('manutenzioni_v4').select('id,stato,biennale,note,eseguita_il').eq('id', int(job_id)).execute().data
     if len(rows) != 1 or rows[0].get('stato') != 'ESEGUITA':
         raise ValueError('La manutenzione non risulta eseguita.')
     if rows[0].get('biennale') is True:
@@ -471,7 +471,7 @@ def add_biennale_to_completed(job_id, visit_date, note_extra=''):
     if note_extra.strip():
         entry += ' Note visita: ' + note_extra.strip()
     updated_note = (existing_note + '\n' + entry).strip()
-    result = (db().table('manutenzioni_v2')
+    result = (db().table('manutenzioni_v4')
               .update({'biennale': True, 'scadenza_biennale': next_due, 'note': updated_note})
               .eq('id', int(job_id)).eq('stato', 'ESEGUITA').eq('biennale', False).execute())
     if not result.data:
@@ -507,7 +507,7 @@ def register_biennale_existing(plant_id, visit_date, operator, notes=''):
     if clean(notes): entry+=' Osservazioni: '+clean(notes)
     new_note=(old_note+'\n'+entry).strip()
     # Controllo condizionale: non sovrascrive una biennale già presente.
-    result=(client.table('manutenzioni_v2')
+    result=(client.table('manutenzioni_v4')
             .update({'biennale':True,
                      'scadenza_biennale':(visit_date+relativedelta(months=24)).isoformat(),
                      'note':new_note})
@@ -521,7 +521,7 @@ def register_biennale_existing(plant_id, visit_date, operator, notes=''):
 def cancel_job(job_id, reason):
     # Conserva una copia completa PRIMA di modificare il record.
     client = db()
-    result = client.table('manutenzioni_v2').select('*').eq('id',int(job_id)).execute().data
+    result = client.table('manutenzioni_v4').select('*').eq('id',int(job_id)).execute().data
     if len(result)!=1 or result[0].get('stato')!='ESEGUITA':
         raise ValueError('Questa manutenzione non risulta eseguita o non esiste più.')
     old = result[0]
@@ -531,8 +531,8 @@ def cancel_job(job_id, reason):
         'motivo': reason,
         'annullato_il': datetime.now().astimezone().isoformat()
     }
-    client.table('storico_annullamenti_v2').insert(audit).execute()
-    client.table('manutenzioni_v2').update({
+    client.table('storico_annullamenti_v4').insert(audit).execute()
+    client.table('manutenzioni_v4').update({
         'stato':'DA_FARE', 'tecnico_esecutore':None,
         'eseguita_il':None, 'semestrale':False, 'biennale':False, 'scadenza_biennale':None, 'note':None
     }).eq('id',int(job_id)).eq('stato','ESEGUITA').execute()
@@ -541,7 +541,7 @@ def cancel_job(job_id, reason):
 def correct_executor(job_id, new_executor, reason):
     """Corregge solo l'esecutore di una visita eseguita, salvando prima l'originale."""
     client = db()
-    records = client.table('manutenzioni_v2').select('*').eq('id', int(job_id)).execute().data
+    records = client.table('manutenzioni_v4').select('*').eq('id', int(job_id)).execute().data
     if len(records) != 1 or records[0].get('stato') != 'ESEGUITA':
         raise ValueError('Registrazione non trovata o non più eseguita.')
     old = records[0]
@@ -551,13 +551,13 @@ def correct_executor(job_id, new_executor, reason):
     if not reason.strip():
         raise ValueError('Inserisci il motivo della correzione.')
     # Si utilizza lo storico già esistente, identificando esplicitamente la correzione.
-    client.table('storico_annullamenti_v2').insert({
+    client.table('storico_annullamenti_v4').insert({
         'manutenzione_id': int(job_id), 'dati_precedenti': old,
         'motivo': 'CORREZIONE TECNICO ESECUTORE: ' + reason.strip()
                   + f' | da {previous} a {clean(new_executor)}',
         'annullato_il': datetime.now().astimezone().isoformat()
     }).execute()
-    updated = client.table('manutenzioni_v2').update({
+    updated = client.table('manutenzioni_v4').update({
         'tecnico_esecutore': clean(new_executor)
     }).eq('id', int(job_id)).eq('stato', 'ESEGUITA').eq('tecnico_esecutore', previous).execute().data
     if len(updated) != 1:
@@ -568,14 +568,14 @@ def correct_executor(job_id, new_executor, reason):
 def update_plan_safely(plant_id, year, months, reason):
     """Edit annual S/N plan; preserve completed jobs; log change before mutation."""
     client=db()
-    current=client.table('programmazione_v2').select('*').eq('impianto_id',int(plant_id)).eq('anno',int(year)).execute().data
+    current=client.table('programmazione_v4').select('*').eq('impianto_id',int(plant_id)).eq('anno',int(year)).execute().data
     if len(current)!=1:
         raise ValueError('Programmazione annuale mancante o duplicata: nessuna modifica effettuata.')
     before=current[0]
     changed={key:value for key,value in months.items() if before.get(key)!=value}
     if not changed:
         return 'Nessuna modifica: la programmazione è già aggiornata.'
-    existing=client.table('manutenzioni_v2').select('id,mese_competenza,stato').eq('impianto_id',int(plant_id)).eq('anno_competenza',int(year)).execute().data
+    existing=client.table('manutenzioni_v4').select('id,mese_competenza,stato').eq('impianto_id',int(plant_id)).eq('anno_competenza',int(year)).execute().data
     by_month={}
     for job in existing:
         by_month.setdefault(int(job['mese_competenza']),[]).append(job)
@@ -586,13 +586,13 @@ def update_plan_safely(plant_id, year, months, reason):
     # Require an audit table before any data mutation.
     # Supabase permissions must allow this read and write; do not skip audit.
     try:
-        client.table('storico_programmazione_v2').select('id').limit(1).execute()
+        client.table('storico_programmazione_v4').select('id').limit(1).execute()
     except Exception as exc:
-        raise ValueError('Manca la tabella storico_programmazione_v2: configurarla prima di abilitare il salvataggio.') from exc
+        raise ValueError('Manca la tabella storico_programmazione_v4: configurarla prima di abilitare il salvataggio.') from exc
     audit={'impianto_id':int(plant_id),'anno':int(year),'prima':{k:before.get(k) for k in months},'dopo':dict(months),'motivo':reason,'modificato_il':datetime.now().astimezone().isoformat()}
     # Record intent first: an interrupted operation can be reconciled from audit.
-    client.table('storico_programmazione_v2').insert(audit).execute()
-    client.table('programmazione_v2').update(dict(months)).eq('id',before['id']).execute()
+    client.table('storico_programmazione_v4').insert(audit).execute()
+    client.table('programmazione_v4').update(dict(months)).eq('id',before['id']).execute()
     created=0; removed=0
     for name,_,num in MESI:
         key=name.lower()
@@ -600,13 +600,13 @@ def update_plan_safely(plant_id, year, months, reason):
         jobs=by_month.get(num,[])
         if months[key] is True:
             if not jobs:
-                plant=client.table('impianti_v2').select('tecnico_assegnato').eq('id',int(plant_id)).single().execute().data
-                client.table('manutenzioni_v2').insert({'impianto_id':int(plant_id),'anno_competenza':int(year),'mese_competenza':num,'tecnico_assegnato':plant.get('tecnico_assegnato'),'stato':'DA_FARE'}).execute()
+                plant=client.table('impianti_v4').select('tecnico_assegnato').eq('id',int(plant_id)).single().execute().data
+                client.table('manutenzioni_v4').insert({'impianto_id':int(plant_id),'anno_competenza':int(year),'mese_competenza':num,'tecnico_assegnato':plant.get('tecnico_assegnato'),'stato':'DA_FARE'}).execute()
                 created+=1
         else:
             for job in jobs:
                 if job['stato']!='ESEGUITA':
-                    client.table('manutenzioni_v2').delete().eq('id',job['id']).neq('stato','ESEGUITA').execute()
+                    client.table('manutenzioni_v4').delete().eq('id',job['id']).neq('stato','ESEGUITA').execute()
                     removed+=1
     invalidate_data()
     return f'Programmazione aggiornata. Manutenzioni aggiunte: {created}; non eseguite rimosse: {removed}.'
@@ -694,7 +694,7 @@ def activate_official_archive(source):
     for i in range(0,len(records),100):
         missing=[r for r in records[i:i+100] if r['codice'] not in official]
         if missing:
-            client.table('impianti_v2').insert(missing).execute()
+            client.table('impianti_v4').insert(missing).execute()
     current=fetch_rows('impianti','id,codice,note')
     official={r['codice']:r for r in current if str(r.get('codice','')).startswith('OFF-2026-')}
     if len(official)!=2399: raise ValueError('Numero impianti ufficiali non completo: attivazione sospesa.')
@@ -710,11 +710,11 @@ def activate_official_archive(source):
     oldplans={(r['impianto_id'],r['anno']) for r in fetch_rows('programmazione','impianto_id,anno') if r['impianto_id'] in ids}
     for i in range(0,len(plans),100):
         missing=[r for r in plans[i:i+100] if (r['impianto_id'],r['anno']) not in oldplans]
-        if missing:client.table('programmazione_v2').insert(missing).execute()
+        if missing:client.table('programmazione_v4').insert(missing).execute()
     oldjobs={(r['impianto_id'],r['anno_competenza'],r['mese_competenza']) for r in fetch_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza') if r['impianto_id'] in ids}
     for i in range(0,len(jobs),100):
         missing=[r for r in jobs[i:i+100] if (r['impianto_id'],r['anno_competenza'],r['mese_competenza']) not in oldjobs]
-        if missing:client.table('manutenzioni_v2').insert(missing).execute()
+        if missing:client.table('manutenzioni_v4').insert(missing).execute()
     allplans=fetch_rows('programmazione','impianto_id,anno')
     alljobs=fetch_rows('manutenzioni','impianto_id,anno_competenza,mese_competenza')
     plan_keys={(r['impianto_id'],r['anno']) for r in allplans if r['impianto_id'] in ids}
@@ -723,7 +723,7 @@ def activate_official_archive(source):
         raise ValueError('Verifica finale incompleta: vecchio archivio ancora operativo.')
     # Il marcatore attiva l’archivio solo dopo il completamento di tutti i lotti.
     first=official['OFF-2026-00001']
-    client.table('impianti_v2').update({'note':(first.get('note') or '')+' [ARCHIVIO_UFFICIALE_ATTIVO]'}).eq('id',first['id']).execute()
+    client.table('impianti_v4').update({'note':(first.get('note') or '')+' [ARCHIVIO_UFFICIALE_ATTIVO]'}).eq('id',first['id']).execute()
     invalidate_data()
     return {'impianti_ufficiali':len(official),'programmazioni_ufficiali':len(plans),'manutenzioni_da_fare_ufficiali':len(jobs),'vecchio_archivio':'conservato, non cancellato'}
 
@@ -740,6 +740,39 @@ def make_audit_excel(frame):
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         frame.to_excel(writer, index=False, sheet_name='Controllo')
     return buffer.getvalue()
+
+def prepare_dynamic(upload):
+    raw=pd.read_excel(upload,sheet_name='Foglio1',header=2,dtype=str).fillna('')
+    raw.columns=[re.sub(r'\s+',' ',str(c)).strip().upper() for c in raw.columns]
+    fields={'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente','NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica','CAP':'cap',"CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia','TIPO MANUT.':'tipo_manutenzione','MANUTENTORE':'tecnico_assegnato','NOTE':'note'}
+    if not set(fields).issubset(raw.columns): raise ValueError('Intestazioni Excel non riconosciute')
+    raw=raw[(raw['RAG. SOCIALE'].str.strip()!='') & (raw['UBICAZIONE'].str.strip()!='')]
+    old=fetch_rows('impianti','*'); used=set(); records=[]; reviews=[]; seen={}
+    def norm(x): return re.sub(r'\s+',' ',clean(x)).upper()
+    def identity(r): return tuple(norm(r.get(k)) for k in ('provincia','matricola','numero_fabbrica','comune','indirizzo','codice_cliente','cliente'))
+    def strong(r): return (norm(r.get('provincia')),norm(r.get('matricola')))
+    for idx,row in raw.iterrows():
+        r={v:clean(row[k]) or None for k,v in fields.items()}; r['tecnico_assegnato']=r['tecnico_assegnato'] or 'Non assegnato'
+        try: r['progressivo']=int(float(row.get('PROGR.','')))
+        except (ValueError,TypeError): r['progressivo']=None
+        ident=identity(r); seen[ident]=seen.get(ident,0)+1
+        code='NEW-'+hashlib.sha256(json.dumps([ident,seen[ident]],ensure_ascii=False).encode()).hexdigest()[:32]
+        matches=[p for p in old if p['codice']==code and p['id'] not in used]
+        if not matches:
+            matches=[p for p in old if identity(p)==ident and p['id'] not in used]
+        if not matches and strong(r)[1]:
+            matches=[p for p in old if strong(p)==strong(r) and p['id'] not in used]
+        if len(matches)>1:
+            reviews.append({'Riga':int(idx)+4,'Cliente':r['cliente'],'Motivo':'Identificazione ambigua'}); continue
+        p=matches[0] if matches else None
+        if p: used.add(p['id'])
+        months=months_for_cadence(r['tipo_manutenzione'])
+        if not r['tipo_manutenzione'] or months is None:
+            reviews.append({'Riga':int(idx)+4,'Cliente':r['cliente'],'Motivo':'Cadenza da definire; impianto conservato'})
+            months=None
+        if p and all(p.get(k)==v for k,v in r.items()): continue
+        records.append({'id':p['id'] if p else None,'codice':p['codice'] if p else code,'plant':r,'months':months,'before':p})
+    return records,reviews,[{'Codice':p['codice'],'Cliente':p['cliente'],'Indirizzo':p['indirizzo']} for p in old if p['id'] not in used]
 
 st.title('🛠️ Ascensori Servizi & Tesyx')
 area=st.sidebar.radio('Area',['👷 Tecnico','📊 Amministratore'], index=0)
@@ -765,18 +798,25 @@ if area=='📊 Amministratore':
         st.info('Inserisci la password amministratore per accedere.')
         st.stop()
     p=dataset(year)
-    st.subheader('🗓️ Generazione controllata programmazione 2027')
-    st.caption('Copia dal 2026 soltanto nel database di PROVA. S, N e ? restano invariati; nessuna modifica allo storico 2026. Se un lotto si interrompe, la procedura può essere ripetuta dopo i controlli.')
-    confirm_2027 = st.checkbox('Confermo la generazione della programmazione 2027 SOLO nel database di PROVA', key='confirm_generate_2027')
-    if st.button('GENERA PROGRAMMAZIONE 2027 DA 2026', disabled=not confirm_2027, key='generate_2027'):
+    st.subheader('📥 Importa o aggiorna archivio impianti')
+    upload = st.file_uploader('File Excel definitivo per gestionale', type=['xlsx'], key='dynamic_archive')
+    if upload is not None:
         try:
-            with st.spinner('Controllo e generazione 2027 in corso. Non chiudere la pagina.'):
-                nplans,njobs,totaljobs=generate_2027_from_2026()
+            records, reviews, missing = prepare_dynamic(upload)
+            st.write(f"Nuovi: {sum(r['id'] is None for r in records)} · Modificati: {sum(r['id'] is not None for r in records)} · Assenti dal file: {len(missing)} · Da verificare: {len(reviews)}")
+            if reviews: st.dataframe(pd.DataFrame(reviews), hide_index=True)
+            if missing:
+                st.warning('Gli impianti assenti dal file restano invariati. Puoi sospenderli dalla sezione Stato impianti.')
+                st.dataframe(pd.DataFrame(missing), hide_index=True)
+            st.caption('Le visite già eseguite, le biennali e i mesi trascorsi restano invariati. Le cadenze sconosciute richiedono verifica.')
+            confirm = st.checkbox('Confermo importazione e aggiornamento', key='dynamic_confirm')
+            if st.button('IMPORTA / AGGIORNA', disabled=not confirm or not records):
+                with st.spinner('Aggiornamento archivio in corso...'):
+                    result = db().rpc('importa_archivio_v4', {'righe':records}).execute()
+                invalidate_data()
+                st.success(f'Archivio aggiornato: {result.data} impianti elaborati. Premi Aggiorna dati.')
         except Exception as exc:
-            st.error('Generazione bloccata o incompleta: ' + str(exc))
-        else:
-            st.success(f'Programmazione 2027 pronta: {nplans} piani e {njobs} manutenzioni aggiunti. Totale manutenzioni 2027 previste: {totaljobs}.')
-            st.rerun()
+            st.error('Importazione non completata: '+str(exc))
     st.divider()
     st.subheader('📅 Programmazione S/N e archivio Excel')
     st.caption('S = manutenzione programmata · N = non programmata · ? = da verificare. Le modifiche sono riservate all’amministratore.')
@@ -895,177 +935,13 @@ if area=='📊 Amministratore':
                             st.success(result)
                             st.rerun()
     st.divider()
-    st.subheader('🔄 Sincronizza impianti da Excel · versione 7 (matricola / fabbrica)')
-    st.caption('Riconosce impianti nuovi e modificati ogni volta che carichi il file. Nessuna modifica automatica: scegli e conferma una scheda per volta.')
-    sync_file = st.file_uploader('Carica archivio Excel aggiornato', type=['xlsx'], key='sync_excel_v7')
-    if sync_file is not None:
-        try:
-            source = pd.read_excel(sync_file, sheet_name='Foglio1', header=2, dtype=str).fillna('')
-            source.columns = [re.sub(r'\s+', ' ', str(c)).strip().upper() for c in source.columns]
-            fields = {'COD. CLIENTE':'codice_cliente','RAG. SOCIALE':'cliente',
-                      'NUMERO MATRICOLA':'matricola','NUMERO FABBRICA':'numero_fabbrica',
-                      "CITTA'":'comune','UBICAZIONE':'indirizzo','PROV.':'provincia',
-                      'TIPO MANUT.':'tipo_manutenzione','MANUTENTORE':'tecnico_assegnato'}
-            absent = [k for k in fields if k not in source.columns]
-            if absent: raise ValueError('Colonne mancanti: '+', '.join(absent))
-            source = source[(source['RAG. SOCIALE'].str.strip()!='') | (source['UBICAZIONE'].str.strip()!='')].copy()
-            plants = all_rows('impianti','id,codice,'+','.join(fields.values()))
-            def norm(v): return re.sub(r'[^A-Z0-9]','',clean(v).upper())
-            def ident(row, excel=False):
-                return (norm(row.get('NUMERO MATRICOLA' if excel else 'matricola')),
-                        norm(row.get('NUMERO FABBRICA' if excel else 'numero_fabbrica')))
-            # Identificazione: matricola se presente, altrimenti numero fabbrica.
-            # CAP, cliente e indirizzo NON sono identificativi univoci.
-            from collections import defaultdict
-            def technical_key(row, excel=False):
-                mat,fab=ident(row,excel)
-                return ('MAT',mat) if mat else (('FAB',fab) if fab else None)
-            db_keys=defaultdict(list); file_keys=defaultdict(list)
-            for plant in plants:
-                k=technical_key(plant)
-                if k: db_keys[k].append(plant)
-            for idx,r in source.iterrows():
-                k=technical_key(r,True)
-                if k: file_keys[k].append(idx)
-            changes=[]; additions=[]; reviews=[]; unchanged=0
-            for idx,r in source.iterrows():
-                k=technical_key(r,True)
-                if not k:
-                    reviews.append((idx,'Matricola e numero fabbrica mancanti')); continue
-                if len(file_keys[k])!=1:
-                    reviews.append((idx,'Identificativo tecnico ripetuto nel file')); continue
-                matched=db_keys.get(k,[])
-                if len(matched)>1:
-                    reviews.append((idx,'Identificativo tecnico ripetuto nel database')); continue
-                if len(matched)==1:
-                    plant=matched[0]
-                    old_site=(norm(plant.get('codice_cliente')),norm(plant.get('comune')),norm(plant.get('indirizzo')))
-                    new_site=(norm(r.get('COD. CLIENTE')),norm(r.get("CITTA'")),norm(r.get('UBICAZIONE')))
-                    if all(old_site) and all(new_site) and old_site!=new_site:
-                        reviews.append((idx,'Identificativo esistente ma cliente/ubicazione differenti')); continue
-                    delta={col:(clean(plant.get(col)),clean(r[excel_col])) for excel_col,col in fields.items()
-                           if clean(plant.get(col))!=clean(r[excel_col])}
-                    if delta: changes.append((idx,plant,delta))
-                    else: unchanged+=1
-                else:
-                    # Controlla anche che l'altro identificativo tecnico, se presente,
-                    # non appartenga già a una scheda diversa.
-                    mat,fab=ident(r,True)
-                    conflicts=[p for p in plants if (mat and norm(p.get('matricola'))==mat)
-                               or (fab and norm(p.get('numero_fabbrica'))==fab)]
-                    if conflicts:
-                        reviews.append((idx,'Possibile impianto esistente con identificativo alternativo')); continue
-                    if not norm(r.get('UBICAZIONE')) or not norm(r.get("CITTA'")):
-                        reviews.append((idx,'Ubicazione o comune mancanti')); continue
-                    additions.append((idx,r))
-            c1,c2,c3,c4=st.columns(4)
-            c1.metric('Nuovi',len(additions)); c2.metric('Modificati',len(changes))
-            c3.metric('Invariati',unchanged); c4.metric('Da verificare',len(reviews))
-            if reviews:
-                with st.expander('⚠️ Righe da verificare (nessuna modifica automatica)'):
-                    st.dataframe(pd.DataFrame([{'Riga Excel':int(i)+4,'Cliente':source.loc[i,'RAG. SOCIALE'],
-                        'Indirizzo':source.loc[i,'UBICAZIONE'],'Motivo':reason} for i,reason in reviews]),hide_index=True)
-            options=[('NUOVO',idx,r) for idx,r in additions]+[('MODIFICA',idx,(p,d)) for idx,p,d in changes]
-            if options:
-                selection=st.selectbox('Seleziona un impianto da elaborare',range(len(options)),index=None,
-                    format_func=lambda n: f"{options[n][0]} · {source.loc[options[n][1],'RAG. SOCIALE']} · {source.loc[options[n][1],'UBICAZIONE']} · {source.loc[options[n][1],'NUMERO MATRICOLA']}",
-                    placeholder='Scegli un impianto',key='sync_choice_v7')
-                if selection is not None:
-                    mode,idx,detail=options[selection]; row=source.loc[idx]
-                    if mode=='NUOVO':
-                        payload={dbcol:(clean(row[excelcol]) or None) for excelcol,dbcol in fields.items()}
-                        payload['tecnico_assegnato']=payload['tecnico_assegnato'] or 'Non assegnato'
-                        cadence=clean(payload['tipo_manutenzione']).upper()
-                        months=months_for_cadence(cadence)
-                        st.dataframe(pd.DataFrame([{'Campo':k,'Valore':v} for k,v in payload.items()]),hide_index=True)
-                        if months is None or not cadence:
-                            st.error('Cadenza non riconosciuta: definisci prima la programmazione manuale. Inserimento bloccato.')
-                        else:
-                            st.write('Mesi programmati: **'+', '.join(MESI[m-1][1] for m in months)+'** (2026 e 2027)')
-                    else:
-                        plant,delta=detail
-                        st.dataframe(pd.DataFrame([{'Campo':k,'Prima':v[0],'Dopo':v[1]} for k,v in delta.items()]),hide_index=True)
-                        st.warning('Le modifiche a tecnico e cadenza non rigenerano le visite già programmate. Aggiorna separatamente i mesi S/N se necessario.')
-                    st.info('Scarica prima il backup completo Supabase nella sezione sottostante.')
-                    confirm=st.checkbox('Confermo il backup e i dati di questo singolo impianto',key='sync_confirm_v7')
-                    if st.button('SALVA SOLO QUESTO IMPIANTO',disabled=not confirm or (mode=='NUOVO' and (months is None or not cadence)),key='sync_save_v7'):
-                        client=db()
-                        # Rilettura dal database per prevenire doppio inserimento dopo un refresh.
-                        live=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,codice_cliente,indirizzo,comune')
-                        key=ident(row,True)
-                        # Ricontrollo immediato: blocca solo la stessa matricola.
-                        # Stesso indirizzo/cliente/numero fabbrica non implica duplicato.
-                        same=[p for p in live if (key[0] and norm(p.get('matricola'))==key[0]) or (key[1] and norm(p.get('numero_fabbrica'))==key[1])]
-                        if mode=='NUOVO':
-                            if same:
-                                st.error('Impianto già presente: operazione bloccata. Ricarica il file per aggiornare il confronto.')
-                            else:
-                                import uuid
-                                newcode='NEW-'+uuid.uuid4().hex[:20].upper()
-                                created=client.table('impianti_v2').insert({'codice':newcode,**payload,'note':'INSERITO DA AGGIORNAMENTO EXCEL'}).execute().data
-                                if len(created)!=1: raise ValueError('Inserimento non confermato: verifica su Supabase prima di riprovare.')
-                                iid=int(created[0]['id'])
-                                try:
-                                    for yr in (2026,2027):
-                                        plan={'impianto_id':iid,'anno':yr,**{name.lower():(m in months) for name,_,m in MESI}}
-                                        client.table('programmazione_v2').insert(plan).execute()
-                                        for m in months:
-                                            client.table('manutenzioni_v2').insert({'impianto_id':iid,'anno_competenza':yr,
-                                                'mese_competenza':m,'tecnico_assegnato':payload['tecnico_assegnato'],'stato':'DA_FARE'}).execute()
-                                except Exception as exc:
-                                    invalidate_data()
-                                    raise ValueError(f'Impianto creato (ID {iid}) ma programmazione incompleta. NON riprovare: verifica e completa manualmente. Dettaglio: {exc}') from exc
-                                invalidate_data()
-                                st.success('Nuovo impianto inserito con programmazione 2026 e 2027. Ricarica la pagina per verificare.')
-                        else:
-                            if int(plant['id']) not in {int(x['id']) for x in same}:
-                                st.error('Identificativi cambiati nel database: aggiornamento bloccato.')
-                            else:
-                                current=client.table('impianti_v2').select('id,'+','.join(fields.values())).eq('id',int(plant['id'])).execute().data
-                                if len(current)!=1 or any(clean(current[0].get(k))!=v[0] for k,v in delta.items()):
-                                    st.error('Scheda modificata nel frattempo: ricarica il confronto.')
-                                else:
-                                    updated=client.table('impianti_v2').update({k:(v[1] or None) for k,v in delta.items()}).eq('id',int(plant['id'])).execute().data
-                                    if len(updated)!=1: raise ValueError('Salvataggio non confermato.')
-                                    invalidate_data()
-                                    st.success('Scheda aggiornata. Storico e programmazioni non toccati.')
-            else:
-                st.success('Nessun nuovo impianto o modifica certa da applicare.')
-        except Exception as exc:
-            st.error('Sincronizzazione non completata: '+str(exc))
-    st.divider()
-    st.subheader('🧪 Anteprima nuovo archivio Excel (senza scrivere su Supabase)')
-    st.caption('Legge il Foglio1 del file definitivo per gestionale.xlsx. Non importa, cancella o aggiorna alcun dato.')
-    preview_upload = st.file_uploader('Seleziona definitivo per gestionale.xlsx', type=['xlsx'], key='new_archive_preview')
-    if preview_upload is not None:
-        try:
-            raw = pd.read_excel(preview_upload, sheet_name='Foglio1', header=2, dtype=str).fillna('')
-            raw.columns = [re.sub(r'\s+', ' ', str(x)).strip().upper() for x in raw.columns]
-            needed = ['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
-            missing = [x for x in needed if x not in raw.columns]
-            if missing:
-                st.error('Intestazioni non riconosciute: ' + ', '.join(missing))
-            else:
-                raw = raw[(raw['RAG. SOCIALE'].str.strip() != '') | (raw['UBICAZIONE'].str.strip() != '')].copy()
-                raw['TIPO MANUT.'] = raw['TIPO MANUT.'].str.strip().str.upper()
-                raw['MESI RICONOSCIUTI'] = raw['TIPO MANUT.'].map(lambda x: months_for_cadence(x))
-                raw['VERIFICA'] = raw.apply(lambda r: 'DA DEFINIRE' if not r['TIPO MANUT.'] else ('TIPO NON STANDARD' if r['MESI RICONOSCIUTI'] is None else 'AUTOMATICA'), axis=1)
-                st.write(f"Impianti letti: **{len(raw)}** · Cadenze mancanti: **{int((raw['VERIFICA']=='DA DEFINIRE').sum())}** · Tipi non standard: **{int((raw['VERIFICA']=='TIPO NON STANDARD').sum())}**")
-                st.dataframe(raw['TIPO MANUT.'].value_counts(dropna=False).rename_axis('Tipo').reset_index(name='Impianti'), hide_index=True)
-                uncertain = raw[raw['VERIFICA']!='AUTOMATICA']
-                st.markdown('**Impianti da programmare manualmente**')
-                st.dataframe(uncertain[['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','UBICAZIONE','TIPO MANUT.','MANUTENTORE','VERIFICA']], hide_index=True, use_container_width=True)
-                st.info('Anteprima completata: nessun dato è stato scritto su Supabase. Le cadenze manuali si potranno salvare nel gestionale dopo la verifica e la migrazione controllata.')
-        except Exception as exc:
-            st.error('Impossibile leggere il nuovo Excel: ' + str(exc))
-    st.divider()
     st.subheader('💾 Backup di sicurezza prima della sostituzione')
     st.caption('Scarica una copia completa delle tabelle del gestionale prima di qualsiasi modifica. Il backup non scrive su Supabase.')
     if st.button('Prepara backup completo Supabase', key='backup_official_archive'):
         try:
-            backup_tables=['impianti_v2','programmazione_v2','manutenzioni_v2',
-                           'tecnici_v2','stati_impianti_v2','storico_annullamenti_v2',
-                           'storico_programmazione_v2']
+            backup_tables=['impianti_v4','programmazione_v4','manutenzioni_v4',
+                           'tecnici_v4','stati_impianti_v4','storico_annullamenti_v4',
+                           'storico_programmazione_v4']
             buffer=io.BytesIO()
             counts={}; errors={}
             with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as archive:
@@ -1093,111 +969,6 @@ if area=='📊 Amministratore':
         st.download_button('⬇️ Scarica backup completo ZIP',data=st.session_state['archive_backup_bytes'],
                            file_name='TESYX_backup_prima_sostituzione.zip',mime='application/zip',
                            key='download_full_backup')
-    st.divider()
-    st.subheader('🧭 Preparazione sostituzione archivio ufficiale')
-    st.caption('Confronto di sicurezza: il nuovo Excel prevale per assegnazioni e cadenze. Nessuna scrittura su Supabase in questa fase.')
-    official_file=st.file_uploader('Carica definitivo per gestionale.xlsx per preparare la sostituzione',type=['xlsx'],key='official_replace_file')
-    if official_file is not None:
-        try:
-            source=pd.read_excel(official_file,sheet_name='Foglio1',header=2,dtype=str).fillna('')
-            source.columns=[re.sub(r'\s+', ' ', str(c)).strip().upper() for c in source.columns]
-            required=['COD. CLIENTE','RAG. SOCIALE','NUMERO MATRICOLA','NUMERO FABBRICA',"CITTA'",'UBICAZIONE','PROV.','TIPO MANUT.','MANUTENTORE']
-            if any(c not in source.columns for c in required):
-                raise ValueError('Colonne mancanti: '+', '.join(c for c in required if c not in source.columns))
-            source=source[(source['RAG. SOCIALE'].str.strip()!='') | (source['UBICAZIONE'].str.strip()!='')].copy()
-            source['TIPO MANUT.']=source['TIPO MANUT.'].str.strip().str.upper()
-            source['MESI']=source['TIPO MANUT.'].map(months_for_cadence)
-            existing=fetch_rows('impianti','id,codice,matricola,numero_fabbrica,indirizzo,comune,tecnico_assegnato,tipo_manutenzione')
-            def norm(value):
-                return re.sub(r'[^A-Z0-9]','',clean(value).upper())
-            def keys(record):
-                return (norm(record.get('matricola')),norm(record.get('numero_fabbrica')))
-            by_mat={};by_fab={}
-            for plant in existing:
-                mat,fab=keys(plant)
-                if mat:by_mat.setdefault(mat,[]).append(plant)
-                if fab:by_fab.setdefault(fab,[]).append(plant)
-            comparisons=[];seen={}
-            for _,r in source.iterrows():
-                mat=norm(r['NUMERO MATRICOLA']);fab=norm(r['NUMERO FABBRICA'])
-                a=by_mat.get(mat,[]) if mat else []
-                b=by_fab.get(fab,[]) if fab else []
-                candidates={v['id']:v for v in a+b}
-                both={v['id'] for v in a}&{v['id'] for v in b} if mat and fab else set()
-                if len(both)==1: candidate=candidates[next(iter(both))];status='CORRISPONDENZA CERTA'
-                elif len(candidates)==1 and (not a or not b):candidate=next(iter(candidates.values()));status='DA VERIFICARE - UN SOLO IDENTIFICATIVO'
-                elif not candidates:candidate=None;status='NUOVO / NON TROVATO'
-                else:candidate=None;status='AMBIGUO - NON ABBINARE'
-                if candidate:seen[candidate['id']]=seen.get(candidate['id'],0)+1
-                comparisons.append({'Codice cliente':clean(r['COD. CLIENTE']),'Cliente':clean(r['RAG. SOCIALE']),'Matricola':clean(r['NUMERO MATRICOLA']),'Numero fabbrica':clean(r['NUMERO FABBRICA']),'Comune':clean(r["CITTA'"]),'Indirizzo':clean(r['UBICAZIONE']),'Tecnico nuovo':clean(r['MANUTENTORE']),'Cadenza nuova':clean(r['TIPO MANUT.']),'Mesi previsti':','.join(map(str,r['MESI'])) if isinstance(r['MESI'],list) else '', 'ID vecchio proposto':candidate['id'] if candidate else '', 'Tecnico vecchio':candidate.get('tecnico_assegnato','') if candidate else '', 'Esito':status})
-            for item in comparisons:
-                iid=item['ID vecchio proposto']
-                if iid and seen[iid]>1:item['Esito']='AMBIGUO - PIÙ RIGHE SULLO STESSO ID'
-            result=pd.DataFrame(comparisons)
-            st.write('Nuovo archivio:',len(result),'impianti · Attuale Supabase:',len(existing),'impianti')
-            st.dataframe(result['Esito'].value_counts().rename_axis('Esito').reset_index(name='Impianti'),hide_index=True)
-            st.dataframe(result[result['Esito']!='CORRISPONDENZA CERTA'].head(100),hide_index=True,use_container_width=True)
-            st.download_button('⬇️ Scarica confronto completo CSV',data=result.to_csv(index=False,sep=';').encode('utf-8-sig'),file_name='confronto_archivio_ufficiale.csv',mime='text/csv')
-            st.subheader('🚀 Attivazione archivio ufficiale (senza cancellare lo storico)')
-            st.info('Il vecchio archivio e tutti i collegamenti storici rimangono nel database. Si inserisce un archivio ufficiale separato; soltanto alla fine viene attivato per tecnici e amministratore.')
-            if official_active():
-                st.success('ARCHIVIO UFFICIALE GIÀ ATTIVO. Non ripetere l’importazione.')
-            else:
-                st.warning('Operazione reale su Supabase: prima di procedere conserva il backup ZIP già scaricato.')
-                confirm=st.checkbox('Confermo di aver conservato il backup ZIP e di voler attivare i 2.399 impianti ufficiali',key='confirm_real_migration')
-                if st.button('IMPORTA E ATTIVA ARCHIVIO UFFICIALE',disabled=not confirm,key='real_migration'):
-                    try:
-                        with st.spinner('Importazione reale in corso. Non chiudere la pagina.'):
-                            counts=activate_official_archive(source)
-                        st.success('Archivio ufficiale attivato. Ricarica la pagina per visualizzarlo.')
-                        st.json(counts)
-                    except Exception as ex:
-                        st.error('Importazione interrotta: '+str(ex))
-                        st.warning('Non ripetere senza controllo: l’archivio precedente resta operativo finché l’attivazione non è completata.')
-        except Exception as exc:
-            st.error('Preparazione non completata: '+str(exc))
-    st.divider()
-    st.subheader('📥 Importazione archivio impianti')
-    count=db().table('impianti_v2').select('id',count='exact').limit(1).execute().count or 0
-    st.write(f'Impianti presenti nel nuovo archivio: **{count}**')
-    if count==0:
-        upload=st.file_uploader('Carica Archivio_unico_VERIFICATO_test_ripristinato.xlsx',type=['xlsx'])
-        if upload is not None:
-            try:
-                preview=import_frame(upload)
-                month_cols_excel=['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
-                unknown=(preview[month_cols_excel]=='?').sum(axis=1)
-                st.write(f"Impianti: **{len(preview)}** · Impianti con ?: **{int((unknown>0).sum())}** · Celle ?: **{int(unknown.sum())}**")
-                st.warning('I mesi ? resteranno DA VERIFICARE e non genereranno manutenzioni. La procedura scrive nel database di PROVA e non può essere annullata automaticamente.')
-                st.dataframe(preview.loc[unknown>0,['Cliente','Matricola','Indirizzo','Esito controllo']+month_cols_excel].head(30),hide_index=True)
-                st.dataframe(preview[['Cliente','Matricola','Indirizzo','Tecnico proposto']].head(12),hide_index=True)
-                agree=st.checkbox('Ho verificato il file e confermo l’importazione esclusivamente nel database di PROVA')
-                if st.button('IMPORTA NEL DATABASE DI PROVA',type='primary',disabled=not agree):
-                    with st.spinner('Importazione in corso. Non chiudere la pagina.'):
-                        n,j,t=import_new_archive(preview)
-                    st.success(f'Importati {n} impianti, {j} manutenzioni e {t} tecnici.')
-                    st.rerun()
-            except Exception as exc:
-                st.error('Importazione non eseguita o incompleta: '+str(exc))
-    else:
-        st.info('Impianti già presenti: nessuna nuova importazione degli impianti.')
-        st.markdown('#### Ripresa controllata dell’importazione interrotta (solo 2026)')
-        recovery_upload=st.file_uploader('Seleziona lo stesso archivio Excel ripristinato',type=['xlsx'],key='recover_excel')
-        if recovery_upload is not None:
-            try:
-                recovery_df=import_frame(recovery_upload)
-                if len(recovery_df)!=2547:
-                    st.error('Numero di righe inatteso: ripresa bloccata.')
-                else:
-                    st.caption('Il recupero confronta tutti gli impianti e i dati già presenti. Non sovrascrive programmazioni o manutenzioni.')
-                    confirm_recovery=st.checkbox('Confermo la ripresa SOLO nel database di PROVA',key='confirm_recovery')
-                    if st.button('COMPLETA IMPORTAZIONE DI PROVA',disabled=not confirm_recovery,key='recover_button'):
-                        with st.spinner('Verifica e completamento in corso...'):
-                            np,nj,nt=recover_partial_import(recovery_df)
-                        st.success(f'Operazione completata: {np} programmazioni e {nj} manutenzioni mancanti aggiunte; {nt} tecnici verificati.')
-                        st.rerun()
-            except Exception as exc:
-                st.error('Ripresa bloccata o incompleta: '+str(exc))
     st.divider()
     st.subheader('👷 Assegnazione e cambio manutentore')
     st.caption('Assegna gli impianti senza tecnico o cambia il manutentore principale. Le manutenzioni già eseguite e lo storico non vengono modificati.')
@@ -1233,7 +1004,7 @@ if area=='📊 Amministratore':
                             try:
                                 # Aggiorna soltanto il tecnico principale: i giri leggono questa assegnazione.
                                 # Le manutenzioni eseguite conservano il loro tecnico esecutore e i dati storici.
-                                result = db().table('impianti_v2').update({'tecnico_assegnato':new_tech}).eq('id',int(plant_id)).eq('codice',str(selected['codice'])).execute()
+                                result = db().table('impianti_v4').update({'tecnico_assegnato':new_tech}).eq('id',int(plant_id)).eq('codice',str(selected['codice'])).execute()
                                 if not result.data:
                                     raise ValueError('Nessun impianto aggiornato: verificare i permessi.')
                                 invalidate_data()
